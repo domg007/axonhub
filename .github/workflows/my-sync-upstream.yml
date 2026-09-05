@@ -13,10 +13,11 @@ on:
   workflow_dispatch:
 
 permissions:
-  # 要把合并结果推回仓库，所以是 write 不是 read。
-  contents: write
-  # 合并成功后要调 API 去启动构建 workflow。
-  actions: write
+  # 推送不再用 Actions 自带的 GITHUB_TOKEN：GitHub 禁止它推送任何修改
+  # .github/workflows/ 下文件的提交（防止自动化流程自我提权），
+  # 而上游经常改那个目录。改用下面 checkout 里的 SYNC_PAT，
+  # 所以自带令牌只需要最小的只读权限。
+  contents: read
 
 concurrency:
   group: sync-upstream
@@ -33,6 +34,10 @@ jobs:
           ref: myfeature
           # 0 = 拉完整历史。默认只拉最近 1 个提交，那样根本无法做合并。
           fetch-depth: 0
+          # 细粒度 PAT，存在仓库 Secrets 里，只对本仓库生效，
+          # 只开了 Contents 和 Workflows 两项读写。
+          # checkout 会把它写进 git 凭据配置，后面所有 push 自动用它。
+          token: ${{ secrets.SYNC_PAT }}
 
       - name: 配置提交身份
         # 合并如果产生一个 merge commit，git 需要知道作者是谁，
@@ -81,13 +86,8 @@ jobs:
 
       - name: 推送 myfeature
         if: steps.merge.outputs.changed == 'true'
+        # 推上去就会自动触发 my-docker-ghcr.yml 构建新镜像。
+        # 这里原本还有一步“显式调 API 触发构建”，因为 Actions 自带令牌推的提交
+        # 不会触发其它 workflow；现在换成 PAT，推送以你本人身份发生，会正常触发，
+        # 再留着那一步就会重复构建两次。
         run: git push origin myfeature
-
-      - name: 触发镜像构建
-        if: steps.merge.outputs.changed == 'true'
-        # 为什么要多这一步：GitHub 有防死循环机制——用仓库自带的 GITHUB_TOKEN
-        # 推上去的提交，不会自动触发其它 workflow。
-        # 所以合并后必须显式叫一次构建，否则代码更新了但镜像还是旧的。
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh workflow run my-docker-ghcr.yml --ref myfeature
