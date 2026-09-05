@@ -38,6 +38,7 @@ type Handlers struct {
 	RequestContent *api.RequestContentHandlers
 	OIDC           *api.OIDCHandlers
 	RequestPreview *api.RequestPreviewHandlers
+	ManualSync     *api.ManualSyncHandlers
 }
 
 type Services struct {
@@ -82,6 +83,8 @@ func SetupRoutes(server *Server, handlers Handlers, client *ent.Client, services
 		publicGroup.GET("/favicon", handlers.System.GetFavicon)
 		// Health check endpoint - no authentication required
 		publicGroup.GET("/health", handlers.System.Health)
+		// 手动触发全渠道模型同步 - 靠 URL 中的密钥段鉴权，见 api/manual_sync.go
+		publicGroup.GET("/sync-models/:secret", handlers.ManualSync.SyncAllModels)
 		publicGroup.GET("/auth/invitations/:token", handlers.Invitation.Get)
 		publicGroup.POST("/auth/invitations/:token/register", handlers.Invitation.Register)
 	}
