@@ -680,6 +680,7 @@ func withGeminiModelsPagination(modelsURL string, pageSize int, pageToken string
 // prepareModelsEndpoint returns the models endpoint URL and auth headers for the given channel type.
 func (f *ModelFetcher) prepareModelsEndpoint(channelType channel.Type, baseURL string) (string, http.Header) {
 	headers := make(http.Header)
+	applyModelFetchUserAgent(headers)
 
 	baseURL = strings.TrimSuffix(baseURL, "/")
 
