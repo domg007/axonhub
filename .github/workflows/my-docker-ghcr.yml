@@ -1,0 +1,65 @@
+# 构建自定义镜像并推到 GHCR（GitHub 自带的镜像仓库）。
+# 只在 myfeature 分支有新提交时构建，或者你在网页上手动点按钮。
+name: My Docker Image (GHCR)
+
+on:
+  push:
+    branches:
+      - myfeature
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # 往 GHCR 推镜像必须有这个权限。有了它就能直接用仓库自带的 GITHUB_TOKEN，
+  # 不用像上游那样去配 DOCKERHUB_USERNAME / DOCKERHUB_TOKEN 两个 secret。
+  packages: write
+
+concurrency:
+  # 连续推两次代码时，取消前一次还在跑的构建。
+  # 不加这段的话两个构建会同时抢 latest 标签，最后哪个赢看运气。
+  group: ghcr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 拉取代码
+        uses: actions/checkout@v7
+
+      - name: 生成日期标签
+        id: meta
+        # date -u 的 -u 是 UTC。用 UTC 是因为 GitHub 的机器本来就跑在 UTC，
+        # 标签日期和 Actions 日志时间对得上，换成别的时区反而对不上。
+        run: echo "date=$(date -u +'%Y%m%d')" >> "$GITHUB_OUTPUT"
+
+      - name: 准备 buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          # 只建 amd64。你的 VPS 是 GCP e2-micro（x86_64），
+          # 上游那套 amd64 + arm64 双架构对你没用，只会把构建时间翻倍。
+          platforms: linux/amd64
+          # github.repository 会自动展开成 domg007/axonhub，全小写，
+          # 不用手写仓库名，也就不会因为大小写写错而推失败。
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.date }}
+          # 把上次构建的中间层缓存在 GitHub 上，Go 依赖和前端 node_modules 不用每次重下。
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # 跟上游保持一致：不生成来源证明和物料清单。
+          # 开着会在镜像清单里多出附加条目，部分拉取工具会因此报错。
+          provenance: false
+          sbom: false
