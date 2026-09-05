@@ -7,9 +7,9 @@ name: Sync Upstream
 
 on:
   schedule:
-    # 每天 UTC 04:00 = 新加坡时间 12:00。
+    # 每周六 UTC 04:00 = 新加坡时间 12:00。
     # 放在你白天是为了万一合并失败，你当天能看到邮件而不是几天后才发现。
-    - cron: '0 4 * * *'
+    - cron: '0 4 * * 6'
   workflow_dispatch:
 
 permissions:
