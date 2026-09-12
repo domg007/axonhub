@@ -829,6 +829,8 @@ func (handlers *OpenAIHandlers) ListModels(c *gin.Context) {
 
 	requestID, _ := contexts.GetRequestID(ctx)
 
+	handlers.ChannelService.SyncAllChannelModelsIfStale(ctx) // 实时同步，见 biz/channel_model_sync_realtime.go
+
 	include, needFullData := parseOpenAIModelInclude(c.Query("include"), handlers.SystemService.ModelSettingsOrDefault(ctx).DefaultModelAPIIncludeAll)
 
 	var openaiModels []OpenAIModel
