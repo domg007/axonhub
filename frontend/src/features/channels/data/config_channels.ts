@@ -834,7 +834,15 @@ export const CHANNEL_CONFIGS: Record<ChannelType, ChannelConfig> = {
     defaultModels: ['google/gemini-2.5-pro'],
     apiFormat: GEMINI_CONTENTS,
     color: 'bg-gray-100 text-gray-800 border-gray-200',
-    icon: OpenRouter,
+    icon: ZenMux,
+  },
+  zenmux_video: {
+    channelType: 'zenmux_video',
+    baseURL: 'https://zenmux.ai/api/v1',
+    defaultModels: [],
+    apiFormat: 'zenmux/video',
+    color: 'bg-gray-100 text-gray-800 border-gray-200',
+    icon: ZenMux,
   },
   commandcode: {
     channelType: 'commandcode',
@@ -988,6 +996,7 @@ export const CHANNEL_TYPE_TO_PROVIDER: Record<ChannelType, Provider> = {
   zenmux_responses: 'zenmux',
   zenmux_anthropic: 'zenmux',
   zenmux_gemini: 'zenmux',
+  zenmux_video: 'zenmux',
   commandcode: 'commandcode',
   commandcode_anthropic: 'commandcode',
 };

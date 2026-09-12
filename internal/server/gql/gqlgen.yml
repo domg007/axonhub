@@ -172,6 +172,12 @@ models:
   CommandCodeQuotaSettingsInput:
     model:
       - github.com/looplj/axonhub/internal/objects.CommandCodeQuotaSettings
+  OllamaQuotaSettings:
+    model:
+      - github.com/looplj/axonhub/internal/objects.OllamaQuotaSettings
+  OllamaQuotaSettingsInput:
+    model:
+      - github.com/looplj/axonhub/internal/objects.OllamaQuotaSettings
   ChannelRateLimit:
     model:
       - github.com/looplj/axonhub/internal/objects.ChannelRateLimit
@@ -703,9 +709,15 @@ models:
   AutoSyncFrequency:
     model:
       - github.com/looplj/axonhub/internal/server/biz.AutoSyncFrequency
-  QuotaEnforcementMode:
+  QuotaRoutingMode:
     model:
-      - github.com/looplj/axonhub/internal/server/biz.QuotaEnforcementMode
+      - github.com/looplj/axonhub/internal/objects.QuotaRoutingMode
+  QuotaRoutingSettings:
+    model:
+      - github.com/looplj/axonhub/internal/server/biz.QuotaRoutingSettings
+  ChannelQuotaRoutingMode:
+    model:
+      - github.com/looplj/axonhub/internal/objects.QuotaRoutingMode
   TraceStickyMode:
     model:
       - github.com/looplj/axonhub/internal/server/biz.TraceStickyMode

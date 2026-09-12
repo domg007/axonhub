@@ -48,27 +48,24 @@ func NewChatCompletionOrchestrator(
 	modelCircuitBreaker := biz.NewModelCircuitBreaker()
 
 	rateLimitStrategy := NewRateLimitAwareStrategy(rateLimitTracker, channelLimiterManager)
-	quotaStrategy := NewQuotaAwareStrategy(quotaProvider, systemService)
 
 	adaptiveLoadBalancer := NewLoadBalancer(systemService, channelService,
 		NewErrorAwareStrategy(channelService),
 		NewWeightRoundRobinStrategy(channelService),
 		NewLatencyAwareStrategy(channelService),
 		rateLimitStrategy,
-		quotaStrategy,
 	)
 
 	failoverLoadBalancer := NewLoadBalancer(systemService, channelService,
-		NewWeightStrategy(), NewRandomStrategy(), rateLimitStrategy, quotaStrategy)
+		NewWeightStrategy(), NewRandomStrategy(), rateLimitStrategy)
 
 	circuitBreakerLoadBalancer := NewLoadBalancer(systemService, channelService,
-		NewWeightStrategy(), NewModelAwareCircuitBreakerStrategy(modelCircuitBreaker), rateLimitStrategy, quotaStrategy)
+		NewWeightStrategy(), NewModelAwareCircuitBreakerStrategy(modelCircuitBreaker), rateLimitStrategy)
 
 	roundRobinHealthFilter := NewRoundRobinHealthStrategy(channelService)
 	roundRobinLoadBalancer := NewLoadBalancer(systemService, channelService,
 		NewRoundRobinStrategy(channelService),
 		rateLimitStrategy,
-		quotaStrategy,
 	).WithoutWeightTieBreaker().WithRoundRobinHealthFilter(roundRobinHealthFilter)
 
 	return &ChatCompletionOrchestrator{
@@ -194,11 +191,7 @@ func (processor *ChatCompletionOrchestrator) Process(ctx context.Context, reques
 
 	if log.DebugEnabled(ctx) {
 		log.Debug(ctx, "chat request received",
-			log.String("request_body", string(request.Body)),
-			log.Any("request_headers", request.Headers),
-			log.Any("retry_policy", retryPolicy),
-			log.String("system_load_balance_strategy", retryPolicy.LoadBalancerStrategy),
-			log.String("system_trace_sticky_mode", string(retryPolicy.TraceStickyMode)),
+			inboundRequestDebugFields(request, retryPolicy)...,
 		)
 	}
 

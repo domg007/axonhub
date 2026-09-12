@@ -10,6 +10,7 @@ export const apiFormatSchema = z.enum([
   'openai/image_variation',
   'openai/embeddings',
   'openai/video',
+  'zenmux/video',
   'openai/moderations',
   'openai/alpha_search',
   'openai/audio_speech',
@@ -34,6 +35,7 @@ export const configurableChannelEndpointApiFormats = [
   'openai/image_edit',
   'openai/image_variation',
   'openai/embeddings',
+  'zenmux/video',
   'openai/moderations',
   'openai/alpha_search',
   'openai/audio_speech',
@@ -128,6 +130,7 @@ export const channelTypeSchema = z.enum([
   'zenmux_responses',
   'zenmux_anthropic',
   'zenmux_gemini',
+  'zenmux_video',
   'commandcode',
   'commandcode_anthropic',
 ]);
@@ -306,8 +309,14 @@ export const commandCodeQuotaSettingsSchema = z.object({
 });
 export type CommandCodeQuotaSettings = z.infer<typeof commandCodeQuotaSettingsSchema>;
 
+export const ollamaQuotaSettingsSchema = z.object({
+  authCookie: z.string().optional().nullable(),
+});
+export type OllamaQuotaSettings = z.infer<typeof ollamaQuotaSettingsSchema>;
+
 export const channelProviderQuotaSettingsSchema = z.object({
   commandCode: commandCodeQuotaSettingsSchema.optional().nullable(),
+  ollama: ollamaQuotaSettingsSchema.optional().nullable(),
 });
 export type ChannelProviderQuotaSettings = z.infer<typeof channelProviderQuotaSettingsSchema>;
 
@@ -330,9 +339,11 @@ export const channelSettingsSchema = z.object({
   retryableErrorPatterns: z.array(retryableErrorPatternSchema).optional().nullable(),
   modelProtocols: z.array(modelProtocolSchema).optional().nullable(),
   providerQuota: channelProviderQuotaSettingsSchema.optional().nullable(),
+  quotaRoutingMode: z.enum(['INHERIT', 'IGNORE_QUOTA', 'REMOVE_ON_EXHAUSTED', 'BACKPRESSURE']).optional(),
 });
 
 export type ChannelSettings = z.infer<typeof channelSettingsSchema>;
+export type ChannelQuotaRoutingMode = NonNullable<ChannelSettings['quotaRoutingMode']>;
 
 // Channel Model Entry
 export const channelModelEntrySchema = z.object({
@@ -378,6 +389,7 @@ export const providerQuotaStatusSchema = z.object({
   ready: z.boolean(),
   quotaData: z.record(z.string(), z.unknown()),
   providerType: z.string(),
+  accountKey: z.string().optional().nullable(),
 });
 export type ProviderQuotaStatus = z.infer<typeof providerQuotaStatusSchema>;
 

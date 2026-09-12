@@ -67,6 +67,7 @@ type TransformOptions {
 type SyncChannelModelsPayload {
   channelID: ID!
   supportedModels: [String!]!
+  manualModels: [String!]!
 }
 
 input ReasoningEffortMappingInput {
@@ -156,12 +157,22 @@ input CommandCodeQuotaSettingsInput {
   authCookie: String
 }
 
+type OllamaQuotaSettings {
+  authCookie: String
+}
+
+input OllamaQuotaSettingsInput {
+  authCookie: String
+}
+
 type ChannelProviderQuotaSettings {
   commandCode: CommandCodeQuotaSettings
+  ollama: OllamaQuotaSettings
 }
 
 input ChannelProviderQuotaSettingsInput {
   commandCode: CommandCodeQuotaSettingsInput
+  ollama: OllamaQuotaSettingsInput
 }
 
 type ChannelSettings {
@@ -182,6 +193,14 @@ type ChannelSettings {
   retryableErrorPatterns: [RetryableErrorPattern!]
   modelProtocols: [ModelProtocol!]
   providerQuota: ChannelProviderQuotaSettings @goField(forceResolver: true)
+  quotaRoutingMode: ChannelQuotaRoutingMode
+}
+
+enum ChannelQuotaRoutingMode {
+  INHERIT
+  IGNORE_QUOTA
+  REMOVE_ON_EXHAUSTED
+  BACKPRESSURE
 }
 
 enum CapabilityPolicy {
@@ -250,6 +269,7 @@ input ChannelSettingsInput {
   retryableErrorPatterns: [RetryableErrorPatternInput!]
   modelProtocols: [ModelProtocolInput!]
   providerQuota: ChannelProviderQuotaSettingsInput
+  quotaRoutingMode: ChannelQuotaRoutingMode
 }
 
 input ChannelRateLimitInput {
@@ -883,6 +903,9 @@ type Mutation {
   bulkEnableChannels(ids: [ID!]!): Boolean!
   bulkRecoverChannels(ids: [ID!]!): Boolean!
   bulkDeleteChannels(ids: [ID!]!): Boolean!
+  bulkAddChannelTags(ids: [ID!]!, tags: [String!]!): Boolean!
+  bulkRemoveChannelTags(ids: [ID!]!, tags: [String!]!): Boolean!
+  bulkManageChannelTags(ids: [ID!]!, addTags: [String!]!, removeTags: [String!]!): Boolean!
   testChannel(input: TestChannelInput!): TestChannelPayload!
   testChannelAPIKeys(channelID: ID!, modelID: String): TestChannelAPIKeysPayload!
   testChannelAPIKey(channelID: ID!, key: String!, modelID: String): TestAPIKeyResult!

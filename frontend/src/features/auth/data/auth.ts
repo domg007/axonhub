@@ -1,10 +1,12 @@
 import { useEffect } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from '@tanstack/react-router';
 import { graphqlRequest } from '@/gql/graphql';
 import { ME_QUERY } from '@/gql/users';
 import { toast } from 'sonner';
 import { useAuthStore, setTokenToStorage, removeTokenFromStorage } from '@/stores/authStore';
+import { useProjectStore } from '@/stores/projectStore';
+import { isProjectSelectionValid } from '@/lib/project-membership';
 import { AuthUser } from '@/stores/authStore';
 import { authApi } from '@/lib/api-client';
 import i18n from '@/lib/i18n';
@@ -20,14 +22,18 @@ interface MeResponse {
 
 export function useMe(enabled = true) {
   const { setUser } = useAuthStore((state) => state.auth);
+  const accessToken = useAuthStore((state) => state.auth.accessToken);
 
   const query = useQuery({
-    queryKey: ['me'],
+    // Keying by token keeps account switches (including the 401-expiry path,
+    // which doesn't clear the query cache) from reusing another account's
+    // cached memberships.
+    queryKey: ['me', accessToken],
     queryFn: async () => {
       const data = await graphqlRequest<MeResponse>(ME_QUERY);
       return data.me;
     },
-    enabled: enabled && !!useAuthStore.getState().auth.accessToken,
+    enabled: enabled && !!accessToken,
     retry: false,
   });
 
@@ -35,6 +41,15 @@ export function useMe(enabled = true) {
   useEffect(() => {
     if (query.data) {
       const userLanguage = query.data.preferLanguage || 'en';
+
+      // The selected project is persisted per browser, but only valid for the
+      // user it belonged to. Drop any project the current user is not a member
+      // of so a stale selection from a previous account is never sent to the
+      // server as X-Project-ID.
+      const { selectedProjectId, clearSelectedProjectId } = useProjectStore.getState();
+      if (!isProjectSelectionValid(query.data, selectedProjectId)) {
+        clearSelectedProjectId();
+      }
 
       setUser(query.data);
 
@@ -66,6 +81,11 @@ export function useSignIn() {
       setAccessToken(data.token);
       setUser(data.user);
 
+      // Do not clear the persisted project here: the AuthGuard gates
+      // project-scoped queries until the selected project is validated
+      // against this user's memberships (useMe clears it when stale), so a
+      // returning user keeps their last selection while another account's
+      // stale selection can never leak into a request.
       // Initialize i18n with user's preferred language
       if (userLanguage !== i18n.language) {
         i18n.changeLanguage(userLanguage);
@@ -88,6 +108,7 @@ export function useSignIn() {
 export function useSignOut() {
   const { reset } = useAuthStore((state) => state.auth);
   const router = useRouter();
+  const queryClient = useQueryClient();
 
   return () => {
     // Clear token from localStorage
@@ -95,6 +116,8 @@ export function useSignOut() {
 
     // Clear auth store
     reset();
+
+    queryClient.clear();
 
     toast.success(i18n.t('common.success.signedOut'));
 
@@ -155,6 +178,11 @@ export function useOIDCExchange() {
       setAccessToken(data.token);
       setUser(data.user);
 
+      // Do not clear the persisted project here: the AuthGuard gates
+      // project-scoped queries until the selected project is validated
+      // against this user's memberships (useMe clears it when stale), so a
+      // returning user keeps their last selection while another account's
+      // stale selection can never leak into a request.
       // Initialize i18n with user's preferred language
       if (userLanguage !== i18n.language) {
         i18n.changeLanguage(userLanguage);
