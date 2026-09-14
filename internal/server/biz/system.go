@@ -24,6 +24,7 @@ import (
 	"github.com/looplj/axonhub/internal/log"
 	"github.com/looplj/axonhub/internal/objects"
 	"github.com/looplj/axonhub/internal/pkg/xcache"
+	"github.com/looplj/axonhub/internal/pkg/xerrors"
 	"github.com/looplj/axonhub/internal/pkg/xregexp"
 	"github.com/looplj/axonhub/internal/pkg/xtime"
 	"github.com/looplj/axonhub/llm/httpclient"
@@ -396,8 +397,12 @@ type AutoDisableChannel struct {
 	// Enabled controls whether auto-disable channel is active
 	Enabled bool `json:"enabled"`
 
-	// Statuses defines the status codes and times to auto-disable a channel
-	Statuses []AutoDisableChannelStatus `json:"statuses"`
+	// Rules are the global auto-disable rules, sharing the channel rule shape.
+	Rules []objects.APIKeyAutoDisableRule `json:"rules"`
+
+	// Statuses is read-only compatibility for legacy retry_policy JSON. It is
+	// migrated into Rules by normalizeRetryPolicy and never written back.
+	Statuses []AutoDisableChannelStatus `json:"statuses,omitempty"`
 }
 
 type AutoDisableChannelStatus struct {
@@ -1058,7 +1063,12 @@ func (s *SystemService) RetryPolicy(ctx context.Context) (*RetryPolicy, error) {
 }
 
 func (s *SystemService) RetryPolicyOrDefault(ctx context.Context) *RetryPolicy {
-	policy, err := s.RetryPolicy(ctx)
+	// Internal callers (stream processing, error handling, channel auto-disable,
+	// load balancing) run with API-key or background contexts that carry no user
+	// principal, which the Ent privacy layer rejects with "no user in context".
+	// Reading the global retry policy is a system-scoped operation, so apply a
+	// scoped system bypass instead of silently falling back to the default.
+	policy, err := s.RetryPolicy(authz.WithSystemBypass(ctx, "retry-policy-or-default"))
 	if err != nil {
 		if ent.IsNotFound(err) {
 			return lo.ToPtr(defaultRetryPolicy)
@@ -1075,6 +1085,12 @@ func (s *SystemService) RetryPolicyOrDefault(ctx context.Context) *RetryPolicy {
 // SetRetryPolicy sets the retry policy configuration.
 func (s *SystemService) SetRetryPolicy(ctx context.Context, policy *RetryPolicy) error {
 	normalizeRetryPolicy(policy)
+
+	rules, err := normalizeAutoDisableRules(policy.AutoDisableChannel.Rules, false)
+	if err != nil {
+		return xerrors.ValidationError(err.Error())
+	}
+	policy.AutoDisableChannel.Rules = rules
 
 	jsonBytes, err := json.Marshal(policy)
 	if err != nil {
@@ -1127,8 +1143,20 @@ func normalizeRetryPolicy(policy *RetryPolicy) {
 		policy.NonStreamResponseTimeoutSeconds = maxRetryResponseTimeoutSeconds
 	}
 
-	if policy.AutoDisableChannel.Statuses == nil {
-		policy.AutoDisableChannel.Statuses = []AutoDisableChannelStatus{}
+	if len(policy.AutoDisableChannel.Rules) == 0 && len(policy.AutoDisableChannel.Statuses) > 0 {
+		rules := make([]objects.APIKeyAutoDisableRule, 0, len(policy.AutoDisableChannel.Statuses))
+		for _, statusConfig := range policy.AutoDisableChannel.Statuses {
+			rules = append(rules, objects.APIKeyAutoDisableRule{
+				StatusCodes: []int{statusConfig.Status},
+				Times:       statusConfig.Times,
+				Action:      objects.APIKeyAutoDisableActionPermanent,
+			})
+		}
+		policy.AutoDisableChannel.Rules = rules
+	}
+	policy.AutoDisableChannel.Statuses = nil
+	if policy.AutoDisableChannel.Rules == nil {
+		policy.AutoDisableChannel.Rules = []objects.APIKeyAutoDisableRule{}
 	}
 
 	switch policy.UpstreamErrorPolicy.Mode {

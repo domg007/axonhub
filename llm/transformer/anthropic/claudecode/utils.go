@@ -64,42 +64,41 @@ func applyClaudeToolPrefixStructured(llmReq *llm.Request, prefix string) *llm.Re
 		return llmReq
 	}
 
-	request := *llmReq
-	request.Tools = slices.Clone(llmReq.Tools)
-	request.ToolChoice = llm.ResolveSingleFunctionChoice(llmReq.ToolChoice, llmReq.Tools)
-	if request.ToolChoice != nil {
-		choice := *request.ToolChoice
+	llmReq = cloneRequestForToolPrefix(llmReq)
+
+	// Prefix tool names in tools array
+	for i := range llmReq.Tools {
+		if !strings.HasPrefix(llmReq.Tools[i].Function.Name, prefix) {
+			llmReq.Tools[i].Function.Name = prefix + llmReq.Tools[i].Function.Name
+		}
+	}
+
+	// Prefix the selected function to match its declaration.
+	if llmReq.ToolChoice != nil && llmReq.ToolChoice.NamedToolChoice != nil {
+		if llmReq.ToolChoice.NamedToolChoice.Type == "tool" || llmReq.ToolChoice.NamedToolChoice.Type == llm.ToolTypeFunction {
+			name := llmReq.ToolChoice.NamedToolChoice.Function.Name
+			if name != "" && !strings.HasPrefix(name, prefix) {
+				llmReq.ToolChoice.NamedToolChoice.Function.Name = prefix + name
+			}
+		}
+	}
+
+	return llmReq
+}
+
+// cloneRequestForToolPrefix copies the fields modified when prefixing tool names.
+func cloneRequestForToolPrefix(src *llm.Request) *llm.Request {
+	request := *src
+	request.Tools = slices.Clone(src.Tools)
+	if src.ToolChoice != nil {
+		choice := *src.ToolChoice
 		if choice.NamedToolChoice != nil {
 			named := *choice.NamedToolChoice
 			choice.NamedToolChoice = &named
 		}
 		request.ToolChoice = &choice
 	}
-	llmReq = &request
-
-	// Prefix tool names in tools array
-	for i := range llmReq.Tools {
-		function := &llmReq.Tools[i].Function
-		function.Name = llm.FlattenFunctionName(function.Namespace, function.Name)
-		function.Namespace = ""
-		if !strings.HasPrefix(llmReq.Tools[i].Function.Name, prefix) {
-			llmReq.Tools[i].Function.Name = prefix + llmReq.Tools[i].Function.Name
-		}
-	}
-
-	if llmReq.ToolChoice != nil && llmReq.ToolChoice.NamedToolChoice != nil {
-		named := llmReq.ToolChoice.NamedToolChoice
-		if (named.Type == llm.ToolTypeFunction || named.Type == "tool") && named.Function.Name != "" {
-			name := llm.FlattenFunctionName(named.Function.Namespace, named.Function.Name)
-			if !strings.HasPrefix(name, prefix) {
-				name = prefix + name
-			}
-			named.Function.Name = name
-			named.Function.Namespace = ""
-		}
-	}
-
-	return llmReq
+	return &request
 }
 
 // stripClaudeToolPrefixFromResponse removes the prefix from tool names in the response.

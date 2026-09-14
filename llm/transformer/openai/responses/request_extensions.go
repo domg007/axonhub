@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"bytes"
 	"encoding/json"
 
 	"github.com/looplj/axonhub/llm"
@@ -475,13 +476,27 @@ func structuredToolSignaturesMatch(structuredTools []json.RawMessage, expected [
 }
 
 func rawToolChoiceMatchesCurrentTools(raw json.RawMessage, current *ToolChoice) bool {
-	if current == nil {
-		return true
-	}
-
 	var rawChoice ToolChoice
 	if err := json.Unmarshal(raw, &rawChoice); err != nil {
 		return false
+	}
+
+	if (rawChoice.Type != nil && *rawChoice.Type == "allowed_tools") ||
+		(current != nil && current.Type != nil && *current.Type == "allowed_tools") {
+		if current == nil {
+			return false
+		}
+		// Matching only mode would restore a stale allowlist after a caller
+		// changed its members or replaced it with an unrestricted string mode.
+		expected, err := json.Marshal(&rawChoice)
+		if err != nil {
+			return false
+		}
+		actual, err := json.Marshal(current)
+		return err == nil && bytes.Equal(expected, actual)
+	}
+	if current == nil {
+		return true
 	}
 
 	currentSignature := toolChoiceSignature(current)

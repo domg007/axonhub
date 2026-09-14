@@ -81,7 +81,7 @@ func (t *InboundTransformer) TransformResponse(ctx context.Context, chatResp *ll
 	}
 
 	// Convert to Responses API format
-	resp := convertToResponsesAPIResponse(chatResp)
+	resp := convertToResponsesAPIResponse(mapResponseFunctionNames(chatResp, false))
 
 	body, err := json.Marshal(resp)
 	if err != nil {
@@ -263,7 +263,7 @@ func convertToLLMRequest(req *Request, rawBody ...[]byte) (*llm.Request, error) 
 		})
 	}
 
-	// Preserve tool identities in the unified model.
+	// Decode native tool identities before normalizing their names below.
 	if req.Input.Items != nil {
 		chatReq.TransformOptions.ArrayInputs = lo.ToPtr(true)
 	}
@@ -277,14 +277,8 @@ func convertToLLMRequest(req *Request, rawBody ...[]byte) (*llm.Request, error) 
 
 	chatReq.Messages = messages
 
-	// Preserve tool selection constraints for outbound-specific handling.
-	if req.ToolChoice != nil {
-		choice, err := convertToolChoiceToLLM(req.ToolChoice)
-		if err != nil {
-			return nil, err
-		}
-		chatReq.ToolChoice = choice
-	}
+	// Preserve tool selection independently of namespace declaration normalization.
+	chatReq.ToolChoice = convertToolChoiceToLLM(req.ToolChoice)
 
 	// Convert text format to response format
 	if req.Text != nil && req.Text.Format != nil && req.Text.Format.Type != "" {
@@ -315,30 +309,36 @@ func convertToLLMRequest(req *Request, rawBody ...[]byte) (*llm.Request, error) 
 		attachOpenAIResponsesRequestExtensions(chatReq, req, rawBody[0])
 	}
 
-	return chatReq, nil
+	result, err := flattenRequestFunctionNames(chatReq)
+	if err != nil {
+		return nil, err
+	}
+	result.TransformerMetadata = namespaceMetadata(result)
+	return result, nil
 }
 
 // convertToolChoiceToLLM preserves Responses tool selection without imposing
 // Chat Completions naming or selection restrictions on other outbounds.
-func convertToolChoiceToLLM(src *ToolChoice) (*llm.ToolChoice, error) {
+func convertToolChoiceToLLM(src *ToolChoice) *llm.ToolChoice {
 	if src == nil {
-		return nil, nil
+		return nil
 	}
 	result := &llm.ToolChoice{ToolChoice: src.Mode}
 	if src.Type != nil {
 		result.NamedToolChoice = &llm.NamedToolChoice{
 			Type:     *src.Type,
-			Function: llm.ToolFunction{Name: lo.FromPtr(src.Name), Namespace: src.Namespace},
+			Function: llm.ToolFunction{Name: lo.FromPtr(src.Name)},
 		}
 	}
 	for _, opt := range src.Tools {
-		result.Tools = append(result.Tools, llm.ToolOption{Type: opt.Type, Name: opt.Name, Namespace: opt.Namespace})
+		result.Tools = append(result.Tools, llm.ToolOption{Type: opt.Type, Name: opt.Name})
 	}
-	return result, nil
+	return result
 }
 
 // convertInputToMessages converts Responses API input to llm.Message slice.
-// It handles merging consecutive tool calls that belong to the same assistant turn.
+// It merges consecutive tool calls while preserving native local function names.
+// Request and response boundaries encode names when entering the unified model.
 func convertInputToMessages(input *Input) ([]llm.Message, error) {
 	if input == nil {
 		return nil, nil
