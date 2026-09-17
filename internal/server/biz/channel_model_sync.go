@@ -75,6 +75,7 @@ func (svc *ChannelService) syncChannelModelsForChannel(ctx context.Context, ch *
 		BaseURL:     ch.BaseURL,
 		ChannelID:   lo.ToPtr(ch.ID),
 	})
+	svc.observeModelFetchForAlert(ctx, ch, result, err)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to fetch models: %w", err)
 	}
