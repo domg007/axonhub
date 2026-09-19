@@ -416,6 +416,7 @@ var schemaGraph = func() *sqlgraph.Schema {
 			request.FieldStatus:                     {Type: field.TypeEnum, Column: request.FieldStatus},
 			request.FieldStream:                     {Type: field.TypeBool, Column: request.FieldStream},
 			request.FieldClientIP:                   {Type: field.TypeString, Column: request.FieldClientIP},
+			request.FieldUserAgent:                  {Type: field.TypeString, Column: request.FieldUserAgent},
 			request.FieldMetricsLatencyMs:           {Type: field.TypeInt64, Column: request.FieldMetricsLatencyMs},
 			request.FieldMetricsFirstTokenLatencyMs: {Type: field.TypeInt64, Column: request.FieldMetricsFirstTokenLatencyMs},
 			request.FieldMetricsReasoningDurationMs: {Type: field.TypeInt64, Column: request.FieldMetricsReasoningDurationMs},
@@ -446,6 +447,7 @@ var schemaGraph = func() *sqlgraph.Schema {
 			requestexecution.FieldModelID:                    {Type: field.TypeString, Column: requestexecution.FieldModelID},
 			requestexecution.FieldFormat:                     {Type: field.TypeString, Column: requestexecution.FieldFormat},
 			requestexecution.FieldReasoningEffort:            {Type: field.TypeString, Column: requestexecution.FieldReasoningEffort},
+			requestexecution.FieldChannelAPIKeySuffix:        {Type: field.TypeString, Column: requestexecution.FieldChannelAPIKeySuffix},
 			requestexecution.FieldRequestBody:                {Type: field.TypeJSON, Column: requestexecution.FieldRequestBody},
 			requestexecution.FieldResponseBody:               {Type: field.TypeJSON, Column: requestexecution.FieldResponseBody},
 			requestexecution.FieldResponseChunks:             {Type: field.TypeJSON, Column: requestexecution.FieldResponseChunks},
@@ -3354,6 +3356,11 @@ func (f *RequestFilter) WhereClientIP(p entql.StringP) {
 	f.Where(p.Field(request.FieldClientIP))
 }
 
+// WhereUserAgent applies the entql string predicate on the user_agent field.
+func (f *RequestFilter) WhereUserAgent(p entql.StringP) {
+	f.Where(p.Field(request.FieldUserAgent))
+}
+
 // WhereMetricsLatencyMs applies the entql int64 predicate on the metrics_latency_ms field.
 func (f *RequestFilter) WhereMetricsLatencyMs(p entql.Int64P) {
 	f.Where(p.Field(request.FieldMetricsLatencyMs))
@@ -3575,6 +3582,11 @@ func (f *RequestExecutionFilter) WhereFormat(p entql.StringP) {
 // WhereReasoningEffort applies the entql string predicate on the reasoning_effort field.
 func (f *RequestExecutionFilter) WhereReasoningEffort(p entql.StringP) {
 	f.Where(p.Field(requestexecution.FieldReasoningEffort))
+}
+
+// WhereChannelAPIKeySuffix applies the entql string predicate on the channel_api_key_suffix field.
+func (f *RequestExecutionFilter) WhereChannelAPIKeySuffix(p entql.StringP) {
+	f.Where(p.Field(requestexecution.FieldChannelAPIKeySuffix))
 }
 
 // WhereRequestBody applies the entql json.RawMessage predicate on the request_body field.

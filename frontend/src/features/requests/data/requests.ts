@@ -65,6 +65,7 @@ function buildRequestsQuery(permissions: { canViewApiKeys: boolean; canViewChann
             stream
             status
             clientIP
+            userAgent
             metricsLatencyMs
             metricsFirstTokenLatencyMs
             metricsReasoningDurationMs
@@ -226,7 +227,8 @@ function buildRequestExecutionsQuery(permissions: { canViewChannels: boolean }) 
                   name
                   type
                   baseURL
-              }`
+              }
+              channelAPIKeySuffix`
     : '';
 
   return `
