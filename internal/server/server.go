@@ -118,6 +118,8 @@ func Run(opts ...fx.Option) {
 				return api.SSEKeepAliveConfig{
 					Enabled:  cfg.SSEKeepAlive.Enabled,
 					Interval: cfg.SSEKeepAlive.Interval,
+
+					EarlyHeartbeatModels: cfg.EarlySSEHeartbeat.Models,
 				}
 			}),
 			fx.Invoke(func(cfg log.Config) {
