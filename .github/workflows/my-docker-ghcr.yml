@@ -1,5 +1,6 @@
 # 构建自定义镜像并推到 GHCR（GitHub 自带的镜像仓库）。
 # 只在 myfeature 分支有新提交时构建，或者你在网页上手动点按钮。
+# 现在 myfeature 的新提交只会来自「上游发了新 release」或「我自己改代码」。
 name: My Docker Image (GHCR)
 
 on:
@@ -10,13 +11,11 @@ on:
 
 permissions:
   contents: read
-  # 往 GHCR 推镜像必须有这个权限。有了它就能直接用仓库自带的 GITHUB_TOKEN，
-  # 不用像上游那样去配 DOCKERHUB_USERNAME / DOCKERHUB_TOKEN 两个 secret。
+  # 往 GHCR 推镜像必须有这个权限。有了它就能直接用仓库自带的 GITHUB_TOKEN。
   packages: write
 
 concurrency:
   # 连续推两次代码时，取消前一次还在跑的构建。
-  # 不加这段的话两个构建会同时抢 latest 标签，最后哪个赢看运气。
   group: ghcr-${{ github.ref }}
   cancel-in-progress: true
 
@@ -26,12 +25,51 @@ jobs:
     steps:
       - name: 拉取代码
         uses: actions/checkout@v7
+        with:
+          # 0 = 拉完整历史和全部 tag。下一步的 git describe 必须看得到 tag 才能算出版本号；
+          # 默认的浅克隆只有 1 个提交、没有 tag，算出来会是空的。
+          fetch-depth: 0
 
-      - name: 生成日期标签
+      - name: 生成版本号和镜像标签
         id: meta
-        # date -u 的 -u 是 UTC。用 UTC 是因为 GitHub 的机器本来就跑在 UTC，
-        # 标签日期和 Actions 日志时间对得上，换成别的时区反而对不上。
-        run: echo "date=$(date -u +'%Y%m%d')" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+
+          # ── 为什么要自己算版本号 ──
+          # Dockerfile 里的版本号来自 `cat internal/build/VERSION`。
+          # 而上游的 release.yml 里写了：打 beta / rc 标签时跳过「更新 VERSION 文件」这一步。
+          # 所以那个文件停在上一个正式版（v1.0.0-beta9）不动，跟 beta 迭代完全脱钩。
+          # 上游自己不受影响，因为他们发版走 GoReleaser，版本号直接从 git tag 读。
+
+          # git describe 输出形如：v1.0.0-beta10-5-g1a2b3c4
+          #   v1.0.0-beta10 = 往前数最近的一个 tag
+          #   -5            = 从那个 tag 到现在又多了 5 个提交（包括我自己的改动）
+          #   -g1a2b3c4     = 当前提交的缩写哈希，g 是 git 的意思
+          # --tags     ：轻量 tag 也算（不加的话只认带注释的 tag）
+          # --match    ：只认 v 开头后跟数字的 tag，排掉 axonclaw-* 那个子项目的标签
+          # --abbrev=7 ：哈希取 7 位
+          # --always   ：实在一个 tag 都找不到时，退而只输出哈希，而不是报错停下
+          DESC=$(git describe --tags --match 'v[0-9]*' --abbrev=7 --always)
+
+          # 加 -custom 后缀，一眼能看出这是自建镜像而不是上游官方镜像。
+          VERSION="${DESC}-custom"
+          echo "版本号：$VERSION"
+
+          # 重点：只改本次构建的工作目录，**不提交、不进版本库**。
+          # 这样 internal/build/VERSION 在 git 里永远和上游一模一样，合并时不可能在这里冲突。
+          echo "$VERSION" > internal/build/VERSION
+
+          # 镜像标签不允许出现某些字符，把非法字符统一换成连字符。
+          # tr 是 translate，-c 是取补集（列出的以外都算），-s 是把连续重复的压成一个。
+          IMAGE_TAG=$(echo "$VERSION" | tr -cs 'a-zA-Z0-9._-' '-')
+
+          {
+            echo "date=$(date -u +'%Y%m%d')"
+            echo "version=$VERSION"
+            echo "image_tag=$IMAGE_TAG"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "本次构建版本号：\`$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: 准备 buildx
         uses: docker/setup-buildx-action@v4
@@ -48,18 +86,19 @@ jobs:
         with:
           context: .
           push: true
-          # 只建 amd64。你的 VPS 是 GCP e2-micro（x86_64），
-          # 上游那套 amd64 + arm64 双架构对你没用，只会把构建时间翻倍。
+          # 只建 amd64。VPS 是 GCP e2-micro（x86_64），双架构只会把构建时间翻倍。
           platforms: linux/amd64
-          # github.repository 会自动展开成 domg007/axonhub，全小写，
-          # 不用手写仓库名，也就不会因为大小写写错而推失败。
+          # 三个标签：
+          #   latest              —— VPS 每周一拉的就是它，保持不变
+          #   日期                —— 回滚用（第十五节原有做法）
+          #   版本号              —— 新增，一眼看出这个镜像对应哪个上游 release
           tags: |
             ghcr.io/${{ github.repository }}:latest
             ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.date }}
+            ghcr.io/${{ github.repository }}:${{ steps.meta.outputs.image_tag }}
           # 把上次构建的中间层缓存在 GitHub 上，Go 依赖和前端 node_modules 不用每次重下。
           cache-from: type=gha
           cache-to: type=gha,mode=max
           # 跟上游保持一致：不生成来源证明和物料清单。
-          # 开着会在镜像清单里多出附加条目，部分拉取工具会因此报错。
           provenance: false
           sbom: false

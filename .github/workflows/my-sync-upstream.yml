@@ -1,27 +1,37 @@
-# 自动把上游 looplj/axonhub 的更新合并进我的 myfeature 分支。
+# 只在上游发布新 release 时，才把那个 release 的代码合并进我的 myfeature 分支。
 #
-# 分支分工：
+# 和 2026-09-24 之前的区别：
+#   旧：每周六无条件把 unstable 最新的 HEAD 合进来（跟的是开发线的最前沿）
+#   新：每天看一眼上游有没有发新 release，有才合，而且合的是「那个 tag 指向的提交」，
+#       不是 unstable 的 HEAD。等于永远落后上游开发线一段距离，让别人先踩雷。
+#
+# 分支分工（没变）：
 #   unstable  —— 上游的镜子，永远不在上面改东西，只做快进
 #   myfeature —— 承载我全部自定义改动，上游更新往这里合
-name: Sync Upstream
+name: Sync Upstream Release
 
 on:
   schedule:
-    # 每周六 UTC 04:00 = 新加坡时间 12:00。
-    # 放在你白天是为了万一合并失败，你当天能看到邮件而不是几天后才发现。
-    - cron: '0 4 * * 6'
+    # 每天 UTC 04:00 = 新加坡时间 12:00。
+    # 「每天」不等于「每天都会动」：绝大多数天里上游没发新 release，
+    # 这个流程会在第 3 步就判断「已经是最新 release」然后直接结束，不合并也不构建。
+    # 轮询频率高只是为了「上游一发版我当天就能跟上」，不会增加镜像构建次数。
+    - cron: '0 4 * * *'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: '手动指定要同步到哪个上游 tag（留空＝自动取最新 release）'
+        required: false
+        default: ''
 
 permissions:
-  # 推送不再用 Actions 自带的 GITHUB_TOKEN：GitHub 禁止它推送任何修改
-  # .github/workflows/ 下文件的提交（防止自动化流程自我提权），
-  # 而上游经常改那个目录。改用下面 checkout 里的 SYNC_PAT，
-  # 所以自带令牌只需要最小的只读权限。
+  # 推送用的是下面 checkout 里的 SYNC_PAT，不是这个自带令牌，
+  # 所以自带令牌只需要只读。（GitHub 禁止自带令牌推送任何改动 .github/workflows/ 的提交）
   contents: read
 
 concurrency:
   group: sync-upstream
-  # 这里故意不取消旧任务：合并到一半被砍掉可能把仓库留在中间状态。
+  # 故意不取消旧任务：合并到一半被砍掉可能把仓库留在中间状态。
   cancel-in-progress: false
 
 jobs:
@@ -32,62 +42,108 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: myfeature
-          # 0 = 拉完整历史。默认只拉最近 1 个提交，那样根本无法做合并。
+          # 0 = 拉完整历史（也会带上全部 tag）。默认只拉 1 个提交，那样无法合并、也无法比较 tag。
           fetch-depth: 0
-          # 细粒度 PAT，存在仓库 Secrets 里，只对本仓库生效，
-          # 只开了 Contents 和 Workflows 两项读写。
-          # checkout 会把它写进 git 凭据配置，后面所有 push 自动用它。
           token: ${{ secrets.SYNC_PAT }}
 
       - name: 配置提交身份
-        # 合并如果产生一个 merge commit，git 需要知道作者是谁，
-        # 没配的话这一步会直接报错退出。
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: 抓取上游
-        # 用 HTTPS 而不是 SSH：只是读公开仓库，不需要密钥，也就不用在 Actions 里存私钥。
+      - name: 抓取上游（含全部 tag）
+        # --tags 必须加：release 是一个 tag，不加的话本地根本看不到 v1.0.0-beta10 这种引用。
         run: |
           git remote add upstream https://github.com/looplj/axonhub.git
-          git fetch upstream unstable
+          git fetch upstream unstable --tags
+
+      - name: 查出上游最新 release
+        id: pick
+        env:
+          # gh 命令行工具要用它调 GitHub API。runner 上预装了 gh，不用自己安装。
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MANUAL_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "$MANUAL_TAG" ]; then
+            TAG="$MANUAL_TAG"
+            echo "手动指定 tag：$TAG"
+          else
+            # /releases 接口按发布时间倒序返回，第一条就是最新的一次发布。
+            # select(.draft==false) 排除草稿；不排除 prerelease，因为上游现在全是 beta。
+            # startswith("v") 排除 axonclaw-* 这类属于另一个子项目的 tag。
+            TAG=$(gh api repos/looplj/axonhub/releases \
+              --jq '[.[] | select(.draft==false) | select(.tag_name|startswith("v"))] | .[0].tag_name')
+            echo "上游最新 release：$TAG"
+          fi
+
+          if [ -z "$TAG" ] || [ "$TAG" = "null" ]; then
+            echo "::error::没取到任何 release tag，放弃本次同步"
+            exit 1
+          fi
+
+          # 确认这个 tag 在本地真的存在（手填错字时在这里就报错，而不是到合并那步才炸）。
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::本地找不到 tag $TAG"
+            exit 1
+          fi
+
+          # --is-ancestor A B 判断「A 是不是 B 的祖先」，也就是「B 里已经包含 A 了吗」。
+          # 包含＝这个 release 我早就有了，直接结束，既不合并也不构建。
+          if git merge-base --is-ancestor "$TAG" HEAD; then
+            echo "myfeature 已经包含 $TAG，无需同步"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: 更新 unstable 镜子分支
-        # -B 是「强制把本地 unstable 重置到 origin/unstable」。
-        # --ff-only 是「只允许快进」：因为这个分支我们从不手改，它必然能快进；
-        # 万一哪天被改过导致不能快进，我宁可这里直接报错，也不要它静静地生成一个奇怪的合并。
+        if: steps.pick.outputs.changed == 'true'
+        # 这个分支现在纯粹是「上游长什么样」的存档，已经不参与合并了。
+        # 仍然只做快进：万一哪天不能快进，说明它被人动过，宁可报错也不要生成奇怪的合并。
         run: |
           git checkout -B unstable origin/unstable
           git merge --ff-only upstream/unstable
           git push origin unstable
 
-      - name: 合并进 myfeature
-        id: merge
+      - name: 合并 release tag 进 myfeature
+        if: steps.pick.outputs.changed == 'true'
+        env:
+          TAG: ${{ steps.pick.outputs.tag }}
+        # 注意合的是 "$TAG"（一个固定的提交点），不是 unstable（一直在动的分支头）。
+        # 这一行就是「跟 release」和「跟开发线」的全部区别。
         run: |
           git checkout myfeature
-          BEFORE=$(git rev-parse HEAD)
-
-          if ! git merge --no-edit unstable; then
-            # 有冲突：先把仓库恢复到合并前的样子，再让这一步失败。
-            # 失败会让整个 workflow 变红并给你发邮件，后面的推送和构建都不会执行。
-            # 这就是你选的 fail-closed：宁可不更新，也不推出一个没人看过的镜像。
+          if ! git merge --no-edit -m "Merge upstream release $TAG into myfeature" "$TAG"; then
+            # 有冲突：恢复原状并让整步失败（fail-closed）。
+            # 不推送、不构建、流程变红发邮件。宁可不更新，也不推出一个没人看过的镜像。
             git merge --abort
-            echo "::error::与上游存在冲突，已放弃本次合并，请在本地手动处理"
+            echo "::error::与上游 $TAG 存在冲突，已放弃本次合并，请在本地手动处理"
             exit 1
           fi
 
-          AFTER=$(git rev-parse HEAD)
-          if [ "$BEFORE" = "$AFTER" ]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "上游没有新提交，不需要推送，也不需要重新构建镜像"
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
+      - name: 推送 tag 到我的仓库
+        if: steps.pick.outputs.changed == 'true'
+        env:
+          TAG: ${{ steps.pick.outputs.tag }}
+        # 必须先推 tag、后推分支。
+        # 构建流程要靠 git describe 从 tag 算版本号，tag 没到我的仓库它就算不出来；
+        # 而推分支会立刻触发构建，顺序反了第一次构建就会拿到错的版本号。
+        run: git push origin "refs/tags/$TAG"
 
-      - name: 推送 myfeature
-        if: steps.merge.outputs.changed == 'true'
-        # 推上去就会自动触发 my-docker-ghcr.yml 构建新镜像。
-        # 这里原本还有一步“显式调 API 触发构建”，因为 Actions 自带令牌推的提交
-        # 不会触发其它 workflow；现在换成 PAT，推送以你本人身份发生，会正常触发，
-        # 再留着那一步就会重复构建两次。
+      - name: 推送 myfeature（这一步会触发镜像构建）
+        if: steps.pick.outputs.changed == 'true'
         run: git push origin myfeature
+
+      - name: 小结
+        env:
+          TAG: ${{ steps.pick.outputs.tag }}
+          CHANGED: ${{ steps.pick.outputs.changed }}
+        run: |
+          if [ "$CHANGED" = "true" ]; then
+            echo "已同步到上游 release $TAG，镜像构建已触发" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "上游最新 release 仍是 $TAG，本次无操作" >> "$GITHUB_STEP_SUMMARY"
+          fi
