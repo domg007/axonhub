@@ -97,6 +97,12 @@ func (handlers *ChatCompletionHandlers) ChatCompletionWithRequest(c *gin.Context
 
 	earlyHeartbeat := handlers.startEarlySSEHeartbeat(c, genericReq)
 
+	// Safety net: the explicit Stop below is the normal path, but a panic inside
+	// Process would skip it and let the heartbeat goroutine race with gin's
+	// Recovery middleware. Stop is nil-safe and idempotent (sync.Once), so the
+	// duplicate call is free.
+	defer earlyHeartbeat.Stop()
+
 	result, err := handlers.ChatCompletionOrchestrator.Process(ctx, genericReq)
 
 	// Stop before anything else writes to the response, so the heartbeat
