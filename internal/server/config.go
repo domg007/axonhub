@@ -97,6 +97,8 @@ type Config struct {
 
 	SSEKeepAlive SSEKeepAlive `conf:"sse_keep_alive" yaml:"sse_keep_alive" json:"sse_keep_alive"`
 
+	EarlySSEHeartbeat EarlySSEHeartbeat `conf:"early_sse_heartbeat" yaml:"early_sse_heartbeat" json:"early_sse_heartbeat"`
+
 	Trace     tracing.Config `conf:"trace" yaml:"trace" json:"trace"`
 	Dashboard Dashboard      `conf:"dashboard" yaml:"dashboard" json:"dashboard"`
 
@@ -115,6 +117,15 @@ type Config struct {
 type SSEKeepAlive struct {
 	Enabled  bool          `conf:"enabled" yaml:"enabled" json:"enabled"`
 	Interval time.Duration `conf:"interval" yaml:"interval" json:"interval"`
+}
+
+// EarlySSEHeartbeat controls whether SSE heartbeats start before the upstream
+// request completes, for a specific set of downstream model IDs.
+type EarlySSEHeartbeat struct {
+	// Models is a comma separated allow list of downstream model IDs.
+	// A trailing "*" matches by prefix, e.g. "[anyrouter]/*".
+	// Empty (the default) keeps the stock behaviour.
+	Models string `conf:"models" yaml:"models" json:"models"`
 }
 
 // Dashboard holds configuration for the dashboard cache settings.

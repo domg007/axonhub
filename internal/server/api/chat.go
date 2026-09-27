@@ -33,6 +33,11 @@ type StreamWriter func(c *gin.Context, stream streams.Stream[*httpclient.StreamE
 type SSEKeepAliveConfig struct {
 	Enabled  bool
 	Interval time.Duration
+
+	// EarlyHeartbeatModels is a comma separated allow list of downstream model
+	// IDs whose heartbeats start before the upstream response arrives.
+	// See early_sse_heartbeat.go.
+	EarlyHeartbeatModels string
 }
 
 type sseHeartbeatFormat uint8
@@ -90,11 +95,33 @@ func (handlers *ChatCompletionHandlers) ChatCompletionWithRequest(c *gin.Context
 
 	// log.Debug(ctx, "Chat completion request", log.Any("request", genericReq))
 
+	earlyHeartbeat := handlers.startEarlySSEHeartbeat(c, genericReq)
+
+	// Safety net: the explicit Stop below is the normal path, but a panic inside
+	// Process would skip it and let the heartbeat goroutine race with gin's
+	// Recovery middleware. Stop is nil-safe and idempotent (sync.Once), so the
+	// duplicate call is free.
+	defer earlyHeartbeat.Stop()
+
 	result, err := handlers.ChatCompletionOrchestrator.Process(ctx, genericReq)
+
+	// Stop before anything else writes to the response, so the heartbeat
+	// goroutine never races with the stream writer.
+	earlyHeartbeat.Stop()
+
 	if err != nil {
 		log.Error(ctx, "Error processing chat completion", log.Cause(err))
 
 		httpErr := transformOrchestratorError(ctx, err, handlers.ChatCompletionOrchestrator)
+
+		if earlyHeartbeat.Started() {
+			// Headers are already flushed, so the status code is pinned to 200
+			// and the failure has to be reported inside the stream.
+			writeEarlySSEHeartbeatError(c, earlyHeartbeat.Format(), httpErr.Body)
+
+			return
+		}
+
 		c.JSON(httpErr.StatusCode, json.RawMessage(httpErr.Body))
 
 		return
@@ -102,6 +129,14 @@ func (handlers *ChatCompletionHandlers) ChatCompletionWithRequest(c *gin.Context
 
 	if result.ChatCompletion != nil {
 		resp := result.ChatCompletion
+
+		if earlyHeartbeat.Started() {
+			// The response headers are already committed as SSE, so a buffered
+			// body cannot be written as a plain JSON response any more.
+			writeEarlySSENonStreamResult(c, earlyHeartbeat.Format(), resp.StatusCode, resp.Body)
+
+			return
+		}
 
 		contentType := "application/json"
 		if ct := resp.Headers.Get("Content-Type"); ct != "" {
