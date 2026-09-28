@@ -198,6 +198,8 @@ func (svc *ChannelService) syncChannelModelsForChannel(ctx context.Context, ch *
 		log.Int("manual_count", manualCount),
 		log.Int("total_count", totalCount))
 
+	svc.observeModelChangeForAlert(ctx, ch, updatedCh)
+
 	return updatedCh, changed, nil
 }
 
