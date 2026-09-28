@@ -66,9 +66,9 @@ func (r *webhookRecorder) body(i int) string {
 // 与管理台里给 Discord 用的模板同款：content 字段 + 用 {{.Event}} 区分事件。
 const discordLikeTemplate = `{"content": "{{if eq .Event "channel.model_fetch_recovered"}}recovered{{else}}failed{{end}} | {{.Channel.Name}} | {{.Trigger.Type}} | {{.Trigger.Reason}} | {{.OccurredAt}}"}`
 
-// newModelFetchAlertFixture 装配一个 ChannelService，其 webhook 配置只订阅了 channel.auto_disabled，
-// 用来验证「回退到 auto_disabled 订阅者」这条规则。
-func newModelFetchAlertFixture(t *testing.T, rec *webhookRecorder, subscribedEvent string) (*ChannelService, *ent.Client, context.Context) {
+// newModelFetchAlertFixture 装配一个 ChannelService，并把传入的事件名逐个订阅到名为 discord 的目标上。
+// 传不相关的事件名就能验证「没人显式订阅就不发」。
+func newModelFetchAlertFixture(t *testing.T, rec *webhookRecorder, subscribedEvents ...string) (*ChannelService, *ent.Client, context.Context) {
 	t.Helper()
 
 	resetModelFetchAlertState()
@@ -88,9 +88,9 @@ func newModelFetchAlertFixture(t *testing.T, rec *webhookRecorder, subscribedEve
 				Body:      discordLikeTemplate,
 			},
 		},
-		Subscriptions: []WebhookSubscription{
-			{Event: subscribedEvent, TargetNames: []string{"discord"}},
-		},
+		Subscriptions: lo.Map(subscribedEvents, func(event string, _ int) WebhookSubscription {
+			return WebhookSubscription{Event: event, TargetNames: []string{"discord"}}
+		}),
 	}
 
 	systemService := newTestSystemServiceWithWebhookConfig(t, client, cfg)
@@ -197,9 +197,9 @@ func TestSanitizeModelFetchAlertReason(t *testing.T) {
 	require.Equal(t, modelFetchAlertReasonMaxLen+1, len([]rune(sanitizeModelFetchAlertReason(long))))
 }
 
-func TestModelFetchAlert_FailThenRecover_FallsBackToAutoDisabledSubscribers(t *testing.T) {
+func TestModelFetchAlert_FailThenRecover_NotifiesSubscribers(t *testing.T) {
 	rec := newWebhookRecorder(t)
-	svc, _, ctx := newModelFetchAlertFixture(t, rec, EventChannelAutoDisabled)
+	svc, _, ctx := newModelFetchAlertFixture(t, rec, EventChannelModelFetchFailed, EventChannelModelFetchRecovered)
 	ch := testChannel(7, channel.TypeOpenai)
 
 	// 第一次失败：发一条。
@@ -227,7 +227,7 @@ func TestModelFetchAlert_FailThenRecover_FallsBackToAutoDisabledSubscribers(t *t
 	require.Equal(t, 2, rec.count())
 }
 
-func TestModelFetchAlert_ExplicitSubscriptionWins(t *testing.T) {
+func TestModelFetchAlert_ExplicitSubscriptionDelivers(t *testing.T) {
 	rec := newWebhookRecorder(t)
 	svc, _, ctx := newModelFetchAlertFixture(t, rec, EventChannelModelFetchFailed)
 
@@ -238,7 +238,7 @@ func TestModelFetchAlert_ExplicitSubscriptionWins(t *testing.T) {
 
 func TestModelFetchAlert_SkipsWhenContextExpired(t *testing.T) {
 	rec := newWebhookRecorder(t)
-	svc, _, ctx := newModelFetchAlertFixture(t, rec, EventChannelAutoDisabled)
+	svc, _, ctx := newModelFetchAlertFixture(t, rec, EventChannelModelFetchFailed)
 
 	expired, cancel := context.WithCancel(ctx)
 	cancel()
@@ -253,7 +253,7 @@ func TestModelFetchAlert_SkipsWhenContextExpired(t *testing.T) {
 
 func TestModelFetchAlert_SkipsNonSystemPrincipal(t *testing.T) {
 	rec := newWebhookRecorder(t)
-	svc, client, _ := newModelFetchAlertFixture(t, rec, EventChannelAutoDisabled)
+	svc, client, _ := newModelFetchAlertFixture(t, rec, EventChannelModelFetchFailed)
 
 	// 管理台按钮：登录用户身份。
 	userCtx, err := authz.WithPrincipal(ent.NewContext(context.Background(), client), authz.Principal{Type: authz.PrincipalTypeUser, UserID: lo.ToPtr(1)})
@@ -268,15 +268,16 @@ func TestModelFetchAlert_SkipsNonSystemPrincipal(t *testing.T) {
 
 func TestModelFetchAlert_SkipsVolcengine(t *testing.T) {
 	rec := newWebhookRecorder(t)
-	svc, _, ctx := newModelFetchAlertFixture(t, rec, EventChannelAutoDisabled)
+	svc, _, ctx := newModelFetchAlertFixture(t, rec, EventChannelModelFetchFailed)
 
 	svc.observeModelFetchForAlert(ctx, testChannel(1, channel.TypeVolcengine), &FetchModelsResult{Models: []ModelIdentify{}}, nil)
 	assertNoWebhookSoon(t, rec)
 }
 
-func TestModelFetchAlert_NoSubscribersIsSilent(t *testing.T) {
+// 只订阅 channel.auto_disabled 时不应该收到模型拉取告警：早期的回退逻辑已删除。
+func TestModelFetchAlert_DoesNotFallBackToAutoDisabled(t *testing.T) {
 	rec := newWebhookRecorder(t)
-	svc, _, ctx := newModelFetchAlertFixture(t, rec, "some.other.event")
+	svc, _, ctx := newModelFetchAlertFixture(t, rec, EventChannelAutoDisabled)
 
 	svc.observeModelFetchForAlert(ctx, testChannel(1, channel.TypeOpenai), &FetchModelsResult{Models: []ModelIdentify{}}, nil)
 	assertNoWebhookSoon(t, rec)
@@ -286,7 +287,7 @@ func TestModelFetchAlert_NoSubscribersIsSilent(t *testing.T) {
 // 再跑一次仍为空，不重复；上游恢复后收到 recovered。
 func TestModelFetchAlert_ThroughSyncChannelModels(t *testing.T) {
 	rec := newWebhookRecorder(t)
-	svc, client, ctx := newModelFetchAlertFixture(t, rec, EventChannelAutoDisabled)
+	svc, client, ctx := newModelFetchAlertFixture(t, rec, EventChannelModelFetchFailed, EventChannelModelFetchRecovered)
 
 	var (
 		upstreamMu   sync.Mutex

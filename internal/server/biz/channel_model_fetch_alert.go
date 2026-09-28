@@ -322,15 +322,11 @@ func (n *WebhookNotifier) NotifyChannelModelFetch(ctx context.Context, event Cha
 	}
 }
 
-// selectModelFetchAlertTargets 决定通知发给哪些地址：
+// selectModelFetchAlertTargets 只认针对该事件名的显式订阅，没人订阅就不发。
 //
-// 1. 配置里若有针对该事件名的显式订阅（可通过 GraphQL updateWebhookNotifierConfig 添加），以它为准；
-// 2. 否则回退到 channel.auto_disabled 的订阅者——管理台里只能勾这一个事件，
-// 「渠道被自动禁用」和「渠道拉不到模型」本来就是同一类需要人看一眼的告警。
+// 早期版本曾在无显式订阅时回退到 channel.auto_disabled 的订阅者，
+// 因为当时管理台写死了只能勾那一个事件。现在管理台可以按事件分别订阅，
+// 回退反而会造成意外：用户只勾了「自动禁用」，却收到模型拉取告警。
 func (n *WebhookNotifier) selectModelFetchAlertTargets(cfg WebhookNotifierConfig, eventName string) []WebhookTarget {
-	if targets := n.selectTargets(cfg, eventName); len(targets) > 0 {
-		return targets
-	}
-
-	return n.selectTargets(cfg, EventChannelAutoDisabled)
+	return n.selectTargets(cfg, eventName)
 }
