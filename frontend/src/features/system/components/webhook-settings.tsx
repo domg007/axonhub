@@ -13,8 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch';
 import { proxyTypeSchema, type ProxyConfig, type ProxyType } from '@/features/channels/data/schema';
 import { useProxyPresets, useUpdateWebhookNotifierConfig, useWebhookNotifierConfig, type WebhookNotifierConfig, type WebhookTarget } from '../data/system';
-
-const AUTO_DISABLED_EVENT = 'channel.auto_disabled';
+import { WEBHOOK_EVENTS, getSubscribedTargetNames, toggleEventSubscription } from '../data/webhook-events';
 
 const DEFAULT_WEBHOOK_BODY_TEMPLATE = `{
   "event": "{{.Event}}",
@@ -67,14 +66,14 @@ export function WebhookSettings() {
     }
   }, [webhookConfig]);
 
-  const getSubscribedTargetNames = useCallback(
-    () => new Set(formData.subscriptions.find((subscription) => subscription.event === AUTO_DISABLED_EVENT)?.targetNames || []),
+  const subscribedTargetNamesFor = useCallback(
+    (event: string) => getSubscribedTargetNames(formData.subscriptions, event),
     [formData.subscriptions]
   );
 
   const isTargetSubscribed = useCallback(
-    (targetName: string) => getSubscribedTargetNames().has(targetName),
-    [getSubscribedTargetNames]
+    (event: string, targetName: string) => subscribedTargetNamesFor(event).has(targetName),
+    [subscribedTargetNamesFor]
   );
 
   const addTarget = useCallback(() => {
@@ -226,26 +225,11 @@ export function WebhookSettings() {
     }));
   }, []);
 
-  const handleSubscriptionChange = useCallback((targetName: string, checked: boolean) => {
-    setFormData((prev) => {
-      const current = prev.subscriptions.find((subscription) => subscription.event === AUTO_DISABLED_EVENT);
-      const nextTargetNames = checked
-        ? Array.from(new Set([...(current?.targetNames || []), targetName]))
-        : (current?.targetNames || []).filter((name) => name !== targetName);
-
-      const nextSubscriptions = prev.subscriptions.filter((subscription) => subscription.event !== AUTO_DISABLED_EVENT);
-      if (nextTargetNames.length > 0) {
-        nextSubscriptions.push({
-          event: AUTO_DISABLED_EVENT,
-          targetNames: nextTargetNames,
-        });
-      }
-
-      return {
-        ...prev,
-        subscriptions: nextSubscriptions,
-      };
-    });
+  const handleSubscriptionChange = useCallback((event: string, targetName: string, checked: boolean) => {
+    setFormData((prev) => ({
+      ...prev,
+      subscriptions: toggleEventSubscription(prev.subscriptions, event, targetName, checked),
+    }));
   }, []);
 
   const validateTargets = useCallback(() => {
@@ -326,7 +310,6 @@ export function WebhookSettings() {
     );
   }
 
-  const subscribedTargetCount = getSubscribedTargetNames().size;
   const normalizedNameCounts = formData.targets.reduce<Record<string, number>>((acc, target) => {
     const normalizedName = target.name.trim();
     if (!normalizedName) {
@@ -348,15 +331,17 @@ export function WebhookSettings() {
           <div className='bg-muted/50 space-y-2 rounded-md border p-4'>
             <div className='text-sm font-medium'>{t('system.webhook.availableEvents.title')}</div>
             <div className='text-muted-foreground text-sm'>{t('system.webhook.availableEvents.description')}</div>
-            <div className='bg-background flex items-center justify-between rounded-md border p-3'>
-              <div className='space-y-1'>
-                <div className='font-mono text-xs'>{AUTO_DISABLED_EVENT}</div>
-                <div className='text-muted-foreground text-sm'>{t('system.webhook.events.channelAutoDisabled')}</div>
+            {WEBHOOK_EVENTS.map((webhookEvent) => (
+              <div key={webhookEvent.event} className='bg-background flex items-center justify-between gap-3 rounded-md border p-3'>
+                <div className='space-y-1 min-w-0'>
+                  <div className='font-mono text-xs break-all'>{webhookEvent.event}</div>
+                  <div className='text-muted-foreground text-sm'>{t(webhookEvent.descriptionKey)}</div>
+                </div>
+                <div className='text-muted-foreground shrink-0 text-sm'>
+                  {t('system.webhook.subscriptionCount', { count: subscribedTargetNamesFor(webhookEvent.event).size })}
+                </div>
               </div>
-              <div className='text-muted-foreground text-sm'>
-                {t('system.webhook.subscriptionCount', { count: subscribedTargetCount })}
-              </div>
-            </div>
+            ))}
           </div>
 
           <div className='flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3'>
@@ -376,7 +361,6 @@ export function WebhookSettings() {
             <div className='space-y-4'>
               {formData.targets.map((target, targetIndex) => {
                 const targetName = target.name.trim();
-                const targetSubscribed = targetName ? isTargetSubscribed(targetName) : false;
                 const hasDuplicateName = !!targetName && normalizedNameCounts[targetName] > 1;
                 const proxyType = target.proxy?.type || proxyTypeSchema.enum.disabled;
 
@@ -536,18 +520,20 @@ export function WebhookSettings() {
                         <div className='text-sm font-medium'>{t('system.webhook.subscription')}</div>
                         <div className='text-muted-foreground text-sm'>{t('system.webhook.subscriptionHelp')}</div>
                       </div>
-                      <label className='flex items-start gap-3'>
-                        <Checkbox
-                          checked={targetSubscribed}
-                          onCheckedChange={(checked) => handleSubscriptionChange(target.name.trim(), checked === true)}
-                          disabled={!target.name.trim()}
-                          className='shrink-0 mt-0.5'
-                        />
-                        <div className='space-y-1 min-w-0 flex-1'>
-                          <div className='font-mono text-xs break-all'>{AUTO_DISABLED_EVENT}</div>
-                          <div className='text-muted-foreground text-sm'>{t('system.webhook.events.channelAutoDisabled')}</div>
-                        </div>
-                      </label>
+                      {WEBHOOK_EVENTS.map((webhookEvent) => (
+                        <label key={webhookEvent.event} className='flex items-start gap-3'>
+                          <Checkbox
+                            checked={targetName ? isTargetSubscribed(webhookEvent.event, targetName) : false}
+                            onCheckedChange={(checked) => handleSubscriptionChange(webhookEvent.event, target.name.trim(), checked === true)}
+                            disabled={!target.name.trim()}
+                            className='shrink-0 mt-0.5'
+                          />
+                          <div className='space-y-1 min-w-0 flex-1'>
+                            <div className='font-mono text-xs break-all'>{webhookEvent.event}</div>
+                            <div className='text-muted-foreground text-sm'>{t(webhookEvent.descriptionKey)}</div>
+                          </div>
+                        </label>
+                      ))}
                     </div>
 
                     <div className='space-y-3'>
