@@ -154,7 +154,7 @@ func (Channel) Fields() []ent.Field {
 				entgql.Directives(forceResolver()),
 			).
 			Optional(),
-		field.Int("ordering_weight").Default(100).Comment("Ordering weight for display sorting").
+		field.Int("ordering_weight").Default(50).Comment("Ordering weight for display sorting").
 			Annotations(
 				entgql.OrderField("ORDERING_WEIGHT"),
 			),
