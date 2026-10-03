@@ -1030,7 +1030,7 @@ export function useUpdateModelSettings() {
 
 export type ProbeFrequency = 'ONE_MINUTE' | 'FIVE_MINUTES' | 'THIRTY_MINUTES' | 'ONE_HOUR';
 
-export type AutoSyncFrequency = 'ONE_HOUR' | 'SIX_HOURS' | 'ONE_DAY';
+export type AutoSyncFrequency = 'ONE_HOUR' | 'SIX_HOURS' | 'TWELVE_HOURS' | 'ONE_DAY';
 
 export interface ChannelProbeSetting {
   enabled: boolean;

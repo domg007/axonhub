@@ -507,9 +507,10 @@ type ChannelModelAutoSyncSetting struct {
 type AutoSyncFrequency string
 
 const (
-	AutoSyncFrequencyOneHour  AutoSyncFrequency = "1h"
-	AutoSyncFrequencySixHours AutoSyncFrequency = "6h"
-	AutoSyncFrequencyOneDay   AutoSyncFrequency = "1d"
+	AutoSyncFrequencyOneHour     AutoSyncFrequency = "1h"
+	AutoSyncFrequencySixHours    AutoSyncFrequency = "6h"
+	AutoSyncFrequencyTwelveHours AutoSyncFrequency = "12h"
+	AutoSyncFrequencyOneDay      AutoSyncFrequency = "1d"
 )
 
 func (a AutoSyncFrequency) MarshalGQL(w io.Writer) {
@@ -520,6 +521,8 @@ func (a AutoSyncFrequency) MarshalGQL(w io.Writer) {
 		s = "ONE_HOUR"
 	case AutoSyncFrequencySixHours:
 		s = "SIX_HOURS"
+	case AutoSyncFrequencyTwelveHours:
+		s = "TWELVE_HOURS"
 	case AutoSyncFrequencyOneDay:
 		s = "ONE_DAY"
 	default:
@@ -540,6 +543,8 @@ func (a *AutoSyncFrequency) UnmarshalGQL(v any) error {
 		*a = AutoSyncFrequencyOneHour
 	case "SIX_HOURS":
 		*a = AutoSyncFrequencySixHours
+	case "TWELVE_HOURS":
+		*a = AutoSyncFrequencyTwelveHours
 	case "ONE_DAY":
 		*a = AutoSyncFrequencyOneDay
 	default:
@@ -557,6 +562,8 @@ func (a *AutoSyncFrequency) UnmarshalJSON(data []byte) error {
 			*a = AutoSyncFrequencyOneHour
 		case string(AutoSyncFrequencySixHours), "SIX_HOURS":
 			*a = AutoSyncFrequencySixHours
+		case string(AutoSyncFrequencyTwelveHours), "TWELVE_HOURS":
+			*a = AutoSyncFrequencyTwelveHours
 		case string(AutoSyncFrequencyOneDay), "ONE_DAY":
 			*a = AutoSyncFrequencyOneDay
 		case "1m", "5m", "30m":
@@ -1292,7 +1299,7 @@ func (s *SystemService) SetModelSettings(ctx context.Context, settings SystemMod
 
 func normalizeSystemChannelSettings(setting *SystemChannelSettings) {
 	switch setting.AutoSync.Frequency {
-	case AutoSyncFrequencyOneHour, AutoSyncFrequencySixHours, AutoSyncFrequencyOneDay:
+	case AutoSyncFrequencyOneHour, AutoSyncFrequencySixHours, AutoSyncFrequencyTwelveHours, AutoSyncFrequencyOneDay:
 	default:
 		setting.AutoSync.Frequency = defaultChannelSetting.AutoSync.Frequency
 	}

@@ -51,6 +51,8 @@ func getIntervalMinutesFromAutoSyncFrequency(frequency AutoSyncFrequency) int {
 		return 60
 	case AutoSyncFrequencySixHours:
 		return 360
+	case AutoSyncFrequencyTwelveHours:
+		return 720
 	case AutoSyncFrequencyOneDay:
 		return 1440
 	default:

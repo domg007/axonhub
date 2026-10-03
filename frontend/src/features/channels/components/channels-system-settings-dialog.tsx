@@ -30,6 +30,7 @@ const PROBE_FREQUENCY_OPTIONS: { value: ProbeFrequency; label: string }[] = [
 const AUTO_SYNC_FREQUENCY_OPTIONS: { value: AutoSyncFrequency; label: string }[] = [
   { value: 'ONE_HOUR', label: '1 hour' },
   { value: 'SIX_HOURS', label: '6 hours' },
+  { value: 'TWELVE_HOURS', label: '12 hours' },
   { value: 'ONE_DAY', label: '1 day' },
 ];
 
