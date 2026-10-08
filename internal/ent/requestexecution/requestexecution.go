@@ -27,12 +27,16 @@ const (
 	FieldRequestID = "request_id"
 	// FieldChannelID holds the string denoting the channel_id field in the database.
 	FieldChannelID = "channel_id"
+	// FieldChannelAPIKeyIndex holds the string denoting the channel_api_key_index field in the database.
+	FieldChannelAPIKeyIndex = "channel_api_key_index"
 	// FieldDataStorageID holds the string denoting the data_storage_id field in the database.
 	FieldDataStorageID = "data_storage_id"
 	// FieldExternalID holds the string denoting the external_id field in the database.
 	FieldExternalID = "external_id"
 	// FieldModelID holds the string denoting the model_id field in the database.
 	FieldModelID = "model_id"
+	// FieldUpstreamModelID holds the string denoting the upstream_model_id field in the database.
+	FieldUpstreamModelID = "upstream_model_id"
 	// FieldFormat holds the string denoting the format field in the database.
 	FieldFormat = "format"
 	// FieldReasoningEffort holds the string denoting the reasoning_effort field in the database.
@@ -41,6 +45,8 @@ const (
 	FieldChannelAPIKeySuffix = "channel_api_key_suffix"
 	// FieldRequestBody holds the string denoting the request_body field in the database.
 	FieldRequestBody = "request_body"
+	// FieldResponseHeaders holds the string denoting the response_headers field in the database.
+	FieldResponseHeaders = "response_headers"
 	// FieldResponseBody holds the string denoting the response_body field in the database.
 	FieldResponseBody = "response_body"
 	// FieldResponseChunks holds the string denoting the response_chunks field in the database.
@@ -104,13 +110,16 @@ var Columns = []string{
 	FieldProjectID,
 	FieldRequestID,
 	FieldChannelID,
+	FieldChannelAPIKeyIndex,
 	FieldDataStorageID,
 	FieldExternalID,
 	FieldModelID,
+	FieldUpstreamModelID,
 	FieldFormat,
 	FieldReasoningEffort,
 	FieldChannelAPIKeySuffix,
 	FieldRequestBody,
+	FieldResponseHeaders,
 	FieldResponseBody,
 	FieldResponseChunks,
 	FieldErrorMessage,
@@ -215,6 +224,11 @@ func ByChannelID(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldChannelID, opts...).ToFunc()
 }
 
+// ByChannelAPIKeyIndex orders the results by the channel_api_key_index field.
+func ByChannelAPIKeyIndex(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldChannelAPIKeyIndex, opts...).ToFunc()
+}
+
 // ByDataStorageID orders the results by the data_storage_id field.
 func ByDataStorageID(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldDataStorageID, opts...).ToFunc()
@@ -228,6 +242,11 @@ func ByExternalID(opts ...sql.OrderTermOption) OrderOption {
 // ByModelID orders the results by the model_id field.
 func ByModelID(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldModelID, opts...).ToFunc()
+}
+
+// ByUpstreamModelID orders the results by the upstream_model_id field.
+func ByUpstreamModelID(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldUpstreamModelID, opts...).ToFunc()
 }
 
 // ByFormat orders the results by the format field.

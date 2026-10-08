@@ -524,6 +524,34 @@ func TestInboundTransformer_TransformRequest(t *testing.T) {
 			},
 		},
 		{
+			name: "request keeps additional_tools input item as a raw fragment",
+			httpReq: &httpclient.Request{
+				Body: []byte(`{
+					"model": "gpt-4o",
+					"input": [
+						{"type": "additional_tools", "tools": [{"type": "function", "name": "shell"}]},
+						{"type": "message", "role": "user", "content": "Hello"}
+					]
+				}`),
+			},
+			expectError: false,
+			validate: func(t *testing.T, result *llm.Request) {
+				require.Len(t, result.Messages, 1)
+				require.Equal(t, "user", result.Messages[0].Role)
+				// The item has no counterpart in the unified request, so it is kept
+				// verbatim here and replayed only when the upstream speaks the
+				// private Codex protocol.
+				require.NotNil(t, result.ProviderExtensions)
+				require.NotNil(t, result.ProviderExtensions.OpenAIResponses)
+
+				fragments := result.ProviderExtensions.OpenAIResponses.Request.RawInputItems
+				require.Len(t, fragments, 1)
+				require.Equal(t, "additional_tools", fragments[0].Type)
+				require.Equal(t, 0, fragments[0].OriginalIndex)
+				require.Contains(t, string(fragments[0].Raw), `"shell"`)
+			},
+		},
+		{
 			name: "request with previous_response_id",
 			httpReq: &httpclient.Request{
 				Body: []byte(`{

@@ -267,13 +267,14 @@ func (s *responsesSessionStore) wrapStream(
 	requestBody []byte,
 	stream streams.Stream[*httpclient.StreamEvent],
 ) streams.Stream[*httpclient.StreamEvent] {
+	responseHeaders := httpclient.GetResponseHeaders(stream)
 	wrapped := new(responsesSessionStream)
 	wrapped.ctx = ctx
 	wrapped.store = s
 	wrapped.requestBody = append([]byte(nil), requestBody...)
 	wrapped.inner = stream
 
-	return wrapped
+	return httpclient.WithResponseHeaders(wrapped, responseHeaders)
 }
 
 type responsesSessionStream struct {
@@ -438,6 +439,10 @@ func normalizeResponseSessionItems(items []json.RawMessage) ([]json.RawMessage, 
 			continue
 		}
 		if _, ok := object["status"]; !ok {
+			normalized = append(normalized, cloneResponseSessionValue(item))
+			continue
+		}
+		if responseSessionString(object["type"]) == "web_search_call" {
 			normalized = append(normalized, cloneResponseSessionValue(item))
 			continue
 		}

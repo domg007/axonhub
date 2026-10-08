@@ -92,9 +92,12 @@ func TestDefaultEndpointsForChannelType_UseLLMAPIFormatValues(t *testing.T) {
 			expected: []string{llm.APIFormatOpenAIChatCompletion.String()},
 		},
 		{
-			name:     "minimax exposes chat only",
-			typ:      channel.TypeMinimax,
-			expected: []string{llm.APIFormatOpenAIChatCompletion.String()},
+			name: "minimax exposes chat and image generation",
+			typ:  channel.TypeMinimax,
+			expected: []string{
+				llm.APIFormatOpenAIChatCompletion.String(),
+				llm.APIFormatOpenAIImageGeneration.String(),
+			},
 		},
 		{
 			name:     "xiaomi exposes chat only",
@@ -104,6 +107,11 @@ func TestDefaultEndpointsForChannelType_UseLLMAPIFormatValues(t *testing.T) {
 		{
 			name:     "nanogpt responses defaults to responses",
 			typ:      channel.TypeNanogptResponses,
+			expected: []string{llm.APIFormatOpenAIResponse.String()},
+		},
+		{
+			name:     "bailian responses defaults to responses",
+			typ:      channel.TypeBailianResponses,
 			expected: []string{llm.APIFormatOpenAIResponse.String()},
 		},
 		{
@@ -185,6 +193,14 @@ func TestDefaultEndpointsForChannelType_UseLLMAPIFormatValues(t *testing.T) {
 			name:     "commandcode anthropic defaults to anthropic messages",
 			typ:      channel.TypeCommandcodeAnthropic,
 			expected: []string{llm.APIFormatAnthropicMessage.String()},
+		},
+		{
+			name: "modelscope exposes chat and the native async image format",
+			typ:  channel.TypeModelscope,
+			expected: []string{
+				llm.APIFormatOpenAIChatCompletion.String(),
+				llm.APIFormatModelScopeImage.String(),
+			},
 		},
 	}
 

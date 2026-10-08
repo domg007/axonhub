@@ -139,9 +139,9 @@ func (s *DefaultSelector) selectChannelCadidates(ctx context.Context, req *llm.R
 			continue
 		}
 
-		endpoints := applyForcedAPIFormats(ctx, ch, []biz.ChannelModelEntry{entry}, req.Model, ch.ResolveEndpoints())
+		endpoints := applyForcedAPIFormatsForRequest(ctx, ch, []biz.ChannelModelEntry{entry}, req.Model, req.RequestType, ch.ResolveEndpoints())
 		apiFormat := SelectAPIFormat(endpoints, req)
-		if req.RequestType == llm.RequestTypeAlphaSearch && apiFormat == "" {
+		if requiresExplicitEndpoint(req.RequestType) && apiFormat == "" {
 			continue
 		}
 
@@ -919,6 +919,9 @@ func (s *LoadBalancedSelector) sortCandidates(
 	}
 
 	if len(candidates) <= 1 {
+		if trackSelection && loadBalancer != nil && len(candidates) == 1 {
+			loadBalancer.TrackSelection(candidates[0])
+		}
 		return candidates
 	}
 
@@ -946,8 +949,6 @@ func (s *LoadBalancedSelector) sortCandidates(
 		var sortedCandidates []*ChannelModelsCandidate
 		if loadBalancer == nil {
 			sortedCandidates = group
-		} else if trackSelection {
-			sortedCandidates = loadBalancer.Sort(ctx, group, req.Model, useStream)
 		} else {
 			sortedCandidates = loadBalancer.SortWithoutTracking(ctx, group, req.Model, useStream)
 		}
@@ -964,6 +965,13 @@ func (s *LoadBalancedSelector) sortCandidates(
 			result = append(result, sortedCandidates[:remaining]...)
 			break
 		}
+	}
+
+	// Priority groups are sorted independently, but only the first candidate in
+	// the final result is selected for the initial attempt. Track it once after
+	// assembling the result so fallback groups are not counted prematurely.
+	if trackSelection && loadBalancer != nil && len(result) > 0 {
+		loadBalancer.TrackSelection(result[0])
 	}
 
 	if log.DebugEnabled(ctx) {
@@ -1043,15 +1051,21 @@ func (s *SpecifiedChannelSelector) Select(ctx context.Context, req *llm.Request)
 		return nil, fmt.Errorf("failed to get channel for test: %w", err)
 	}
 
-	entries := channel.GetDirectModelEntries()
+	entries := channel.GetModelEntries()
 
 	entry, ok := entries[req.Model]
+	if !ok {
+		entry, ok = channel.GetDirectModelEntries()[req.Model]
+	}
 	if !ok {
 		return nil, fmt.Errorf("model %s not supported in channel %s", req.Model, channel.Name)
 	}
 
-	endpoints := applyForcedAPIFormats(ctx, channel, []biz.ChannelModelEntry{entry}, req.Model, channel.ResolveEndpoints())
+	endpoints := applyForcedAPIFormatsForRequest(ctx, channel, []biz.ChannelModelEntry{entry}, req.Model, req.RequestType, channel.ResolveEndpoints())
 	apiFormat := SelectAPIFormat(endpoints, req)
+	if requiresExplicitEndpoint(req.RequestType) && apiFormat == "" {
+		return []*ChannelModelsCandidate{}, nil
+	}
 
 	candidate := &ChannelModelsCandidate{
 		Channel:   channel,

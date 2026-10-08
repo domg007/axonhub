@@ -25,8 +25,14 @@ export const requestExecutionSchema = z.object({
   // requestID: z.string(),
   // channelID: z.number(),
   channel: channelSchema.partial().nullable().optional(),
+  // 1-based position of the API key used within the channel's credential list.
+  // Null for single-key/OAuth channels and for executions recorded before the
+  // field existed.
+  channelAPIKeyIndex: z.number().nullable().optional(),
   modelID: z.string(),
+  upstreamModelID: z.string().nullable().optional(),
   requestHeaders: z.any().nullable().optional(),
+  responseHeaders: z.any().nullable().optional(),
   requestBody: z.any(), // JSONRawMessage
   responseBody: z.any().nullable(), // JSONRawMessage
   responseChunks: z.array(z.any()).nullable(), // [JSONRawMessage!]
@@ -59,6 +65,7 @@ export const requestSchema = z.object({
   contentSaved: z.boolean().optional(),
   contentStorageKey: z.string().nullable().optional(),
   requestHeaders: z.any().nullable().optional(),
+  responseHeaders: z.any().nullable().optional(),
   requestBody: z.any().nullable().optional(), // JSONRawMessage
   responseBody: z.any().nullable().optional(), // JSONRawMessage
   responseChunks: z.array(z.any()).nullable().optional(), // [JSONRawMessage!]

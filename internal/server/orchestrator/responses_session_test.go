@@ -238,6 +238,46 @@ func TestResponsesSessionStoreNormalizesClientProvidedHistory(t *testing.T) {
 	)
 }
 
+func TestResponsesSessionStorePreservesWebSearchCallStatusWithoutPreviousResponse(t *testing.T) {
+	store := newResponsesSessionStore()
+	ctx := shared.WithSessionScope(shared.WithResponsesAPI(context.Background()), "api-key:1")
+	body := []byte(`{"model":"gpt-5","input":[{"id":"ws_1","type":"web_search_call","status":"completed","action":{"type":"search","query":"example"}}]}`)
+
+	prepared, _ := store.prepare(ctx, body)
+	require.Equal(t, body, prepared)
+}
+
+func TestResponsesSessionStorePreservesWebSearchCallStatusInPreviousResponse(t *testing.T) {
+	store := newResponsesSessionStore()
+	ctx := shared.WithSessionScope(shared.WithResponsesAPI(context.Background()), "api-key:1")
+	store.record(ctx,
+		[]byte(`{"model":"gpt-5","input":"search docs"}`),
+		[]byte(`{"id":"resp_search","status":"completed","output":[{"id":"ws_1","type":"web_search_call","status":"completed","action":{"type":"search","query":"example"}},{"id":"msg_1","type":"message","role":"assistant","status":"completed","content":"found it"}]}`),
+	)
+
+	prepared, _ := store.prepare(ctx, []byte(`{"model":"gpt-5","previous_response_id":"resp_search","input":"continue"}`))
+	require.JSONEq(t,
+		`{"model":"gpt-5","input":[{"type":"message","role":"user","content":"search docs"},{"id":"ws_1","type":"web_search_call","status":"completed","action":{"type":"search","query":"example"}},{"id":"msg_1","type":"message","role":"assistant","content":"found it"},{"type":"message","role":"user","content":"continue"}]}`,
+		string(prepared),
+	)
+}
+
+func TestResponsesSessionStorePreservesWebSearchCallStatusOnMemoryMiss(t *testing.T) {
+	ctx := shared.WithSessionScope(shared.WithResponsesAPI(context.Background()), "api-key:1")
+	store := newResponsesSessionStore(func(_ context.Context, responseID string) ([]byte, []byte, bool, error) {
+		require.Equal(t, "resp_search", responseID)
+		return []byte(`{"model":"gpt-5","input":"search docs"}`),
+			[]byte(`{"id":"resp_search","status":"completed","output":[{"id":"ws_1","type":"web_search_call","status":"completed","action":{"type":"search","query":"example"}}]}`),
+			true, nil
+	})
+
+	prepared, _ := store.prepare(ctx, []byte(`{"model":"gpt-5","previous_response_id":"resp_search","input":"continue"}`))
+	require.JSONEq(t,
+		`{"model":"gpt-5","input":[{"type":"message","role":"user","content":"search docs"},{"id":"ws_1","type":"web_search_call","status":"completed","action":{"type":"search","query":"example"}},{"type":"message","role":"user","content":"continue"}]}`,
+		string(prepared),
+	)
+}
+
 func TestResponsesSessionStoreNormalizesClientHistoryOnCacheMiss(t *testing.T) {
 	store := newResponsesSessionStore()
 	ctx := shared.WithSessionScope(shared.WithResponsesAPI(context.Background()), "api-key:1")
@@ -398,4 +438,17 @@ func TestResponsesSessionStoreRestoresNamespaceHistoryOnMemoryMiss(t *testing.T)
 			require.Equal(t, "docs", item.Namespace)
 		}
 	}
+}
+
+func TestResponsesSessionStoreWrapStreamPreservesResponseHeaders(t *testing.T) {
+	store := newResponsesSessionStore()
+	headers := http.Header{httpclient.ReasoningIncludedHeader: []string{"true"}}
+	stream := httpclient.WithResponseHeaders(
+		streams.SliceStream([]*httpclient.StreamEvent{{Data: []byte(`{"type":"response.completed"}`)}}),
+		headers,
+	)
+
+	wrapped := store.wrapStream(context.Background(), []byte(`{"model":"gpt-5"}`), stream)
+
+	require.Equal(t, headers, httpclient.GetResponseHeaders(wrapped))
 }

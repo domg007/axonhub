@@ -39,6 +39,15 @@ type PersistenceState struct {
 	// candidate-specific forcing to provider-side streaming happens.
 	OriginalRequestStream *bool
 
+	// PromptProtectionMaskRules records the mask rules that changed this request.
+	// Request-body pass-through uses it to patch the original JSON without dropping
+	// provider-specific fields that are not represented by the unified request.
+	PromptProtectionMaskRules []*ent.PromptProtectionRule
+
+	// PromptProtectionBodyCheck verifies raw replay against the protected prompt
+	// snapshot using the actual inbound mapping, including legacy protectors.
+	PromptProtectionBodyCheck *promptProtectionBodyCheck
+
 	// Persistence state
 	Request     *ent.Request
 	RequestExec *ent.RequestExecution
@@ -69,6 +78,9 @@ type PersistenceState struct {
 	// Request/execution status and channel health intentionally interpret this
 	// outcome differently, as described by StreamCompleted and Perf above.
 	OutboundStreamTerminal streamTerminalState
+	// CleanEOFCompletionEvidence is set only by a protocol transformer after it
+	// has exhausted a clean source and emitted validated terminal evidence.
+	CleanEOFCompletionEvidence bool
 
 	// RawProviderResponse stores the raw provider response for non-stream response pass-through.
 	RawProviderResponse *httpclient.Response
@@ -76,8 +88,15 @@ type PersistenceState struct {
 	// RawProviderRequest stores the actual outbound provider request for pass-through checks.
 	RawProviderRequest *httpclient.Request
 
-	// RawStreamCh receives raw provider stream events for stream response pass-through.
+	// RawStreamCh receives raw provider stream events for stream response pass-through
+	// once the pass-through consumer is attached; earlier events are held on
+	// RawStreamBacklog.
 	RawStreamCh chan *httpclient.StreamEvent
+
+	// RawStreamBacklog holds the current attempt's raw provider stream events until
+	// applyPassThroughStream attaches the pass-through consumer, so the pipeline can
+	// pre-read the attempt without the fan-out goroutine blocking on RawStreamCh.
+	RawStreamBacklog *rawStreamBacklog
 
 	// RawStreamErrRef points to the current attempt's local error variable used by the
 	// captureRawProviderStream fan-out goroutine. Using a per-attempt pointer (instead of

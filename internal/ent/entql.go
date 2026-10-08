@@ -400,6 +400,7 @@ var schemaGraph = func() *sqlgraph.Schema {
 			request.FieldCreatedAt:                  {Type: field.TypeTime, Column: request.FieldCreatedAt},
 			request.FieldUpdatedAt:                  {Type: field.TypeTime, Column: request.FieldUpdatedAt},
 			request.FieldAPIKeyID:                   {Type: field.TypeInt, Column: request.FieldAPIKeyID},
+			request.FieldUserID:                     {Type: field.TypeInt, Column: request.FieldUserID},
 			request.FieldProjectID:                  {Type: field.TypeInt, Column: request.FieldProjectID},
 			request.FieldTraceID:                    {Type: field.TypeInt, Column: request.FieldTraceID},
 			request.FieldDataStorageID:              {Type: field.TypeInt, Column: request.FieldDataStorageID},
@@ -409,6 +410,7 @@ var schemaGraph = func() *sqlgraph.Schema {
 			request.FieldFormat:                     {Type: field.TypeString, Column: request.FieldFormat},
 			request.FieldRequestHeaders:             {Type: field.TypeJSON, Column: request.FieldRequestHeaders},
 			request.FieldRequestBody:                {Type: field.TypeJSON, Column: request.FieldRequestBody},
+			request.FieldResponseHeaders:            {Type: field.TypeJSON, Column: request.FieldResponseHeaders},
 			request.FieldResponseBody:               {Type: field.TypeJSON, Column: request.FieldResponseBody},
 			request.FieldResponseChunks:             {Type: field.TypeJSON, Column: request.FieldResponseChunks},
 			request.FieldChannelID:                  {Type: field.TypeInt, Column: request.FieldChannelID},
@@ -442,13 +444,16 @@ var schemaGraph = func() *sqlgraph.Schema {
 			requestexecution.FieldProjectID:                  {Type: field.TypeInt, Column: requestexecution.FieldProjectID},
 			requestexecution.FieldRequestID:                  {Type: field.TypeInt, Column: requestexecution.FieldRequestID},
 			requestexecution.FieldChannelID:                  {Type: field.TypeInt, Column: requestexecution.FieldChannelID},
+			requestexecution.FieldChannelAPIKeyIndex:         {Type: field.TypeInt, Column: requestexecution.FieldChannelAPIKeyIndex},
 			requestexecution.FieldDataStorageID:              {Type: field.TypeInt, Column: requestexecution.FieldDataStorageID},
 			requestexecution.FieldExternalID:                 {Type: field.TypeString, Column: requestexecution.FieldExternalID},
 			requestexecution.FieldModelID:                    {Type: field.TypeString, Column: requestexecution.FieldModelID},
+			requestexecution.FieldUpstreamModelID:            {Type: field.TypeString, Column: requestexecution.FieldUpstreamModelID},
 			requestexecution.FieldFormat:                     {Type: field.TypeString, Column: requestexecution.FieldFormat},
 			requestexecution.FieldReasoningEffort:            {Type: field.TypeString, Column: requestexecution.FieldReasoningEffort},
 			requestexecution.FieldChannelAPIKeySuffix:        {Type: field.TypeString, Column: requestexecution.FieldChannelAPIKeySuffix},
 			requestexecution.FieldRequestBody:                {Type: field.TypeJSON, Column: requestexecution.FieldRequestBody},
+			requestexecution.FieldResponseHeaders:            {Type: field.TypeJSON, Column: requestexecution.FieldResponseHeaders},
 			requestexecution.FieldResponseBody:               {Type: field.TypeJSON, Column: requestexecution.FieldResponseBody},
 			requestexecution.FieldResponseChunks:             {Type: field.TypeJSON, Column: requestexecution.FieldResponseChunks},
 			requestexecution.FieldErrorMessage:               {Type: field.TypeString, Column: requestexecution.FieldErrorMessage},
@@ -3276,6 +3281,11 @@ func (f *RequestFilter) WhereAPIKeyID(p entql.IntP) {
 	f.Where(p.Field(request.FieldAPIKeyID))
 }
 
+// WhereUserID applies the entql int predicate on the user_id field.
+func (f *RequestFilter) WhereUserID(p entql.IntP) {
+	f.Where(p.Field(request.FieldUserID))
+}
+
 // WhereProjectID applies the entql int predicate on the project_id field.
 func (f *RequestFilter) WhereProjectID(p entql.IntP) {
 	f.Where(p.Field(request.FieldProjectID))
@@ -3319,6 +3329,11 @@ func (f *RequestFilter) WhereRequestHeaders(p entql.BytesP) {
 // WhereRequestBody applies the entql json.RawMessage predicate on the request_body field.
 func (f *RequestFilter) WhereRequestBody(p entql.BytesP) {
 	f.Where(p.Field(request.FieldRequestBody))
+}
+
+// WhereResponseHeaders applies the entql json.RawMessage predicate on the response_headers field.
+func (f *RequestFilter) WhereResponseHeaders(p entql.BytesP) {
+	f.Where(p.Field(request.FieldResponseHeaders))
 }
 
 // WhereResponseBody applies the entql json.RawMessage predicate on the response_body field.
@@ -3559,6 +3574,11 @@ func (f *RequestExecutionFilter) WhereChannelID(p entql.IntP) {
 	f.Where(p.Field(requestexecution.FieldChannelID))
 }
 
+// WhereChannelAPIKeyIndex applies the entql int predicate on the channel_api_key_index field.
+func (f *RequestExecutionFilter) WhereChannelAPIKeyIndex(p entql.IntP) {
+	f.Where(p.Field(requestexecution.FieldChannelAPIKeyIndex))
+}
+
 // WhereDataStorageID applies the entql int predicate on the data_storage_id field.
 func (f *RequestExecutionFilter) WhereDataStorageID(p entql.IntP) {
 	f.Where(p.Field(requestexecution.FieldDataStorageID))
@@ -3572,6 +3592,11 @@ func (f *RequestExecutionFilter) WhereExternalID(p entql.StringP) {
 // WhereModelID applies the entql string predicate on the model_id field.
 func (f *RequestExecutionFilter) WhereModelID(p entql.StringP) {
 	f.Where(p.Field(requestexecution.FieldModelID))
+}
+
+// WhereUpstreamModelID applies the entql string predicate on the upstream_model_id field.
+func (f *RequestExecutionFilter) WhereUpstreamModelID(p entql.StringP) {
+	f.Where(p.Field(requestexecution.FieldUpstreamModelID))
 }
 
 // WhereFormat applies the entql string predicate on the format field.
@@ -3592,6 +3617,11 @@ func (f *RequestExecutionFilter) WhereChannelAPIKeySuffix(p entql.StringP) {
 // WhereRequestBody applies the entql json.RawMessage predicate on the request_body field.
 func (f *RequestExecutionFilter) WhereRequestBody(p entql.BytesP) {
 	f.Where(p.Field(requestexecution.FieldRequestBody))
+}
+
+// WhereResponseHeaders applies the entql json.RawMessage predicate on the response_headers field.
+func (f *RequestExecutionFilter) WhereResponseHeaders(p entql.BytesP) {
+	f.Where(p.Field(requestexecution.FieldResponseHeaders))
 }
 
 // WhereResponseBody applies the entql json.RawMessage predicate on the response_body field.

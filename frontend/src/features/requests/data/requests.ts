@@ -40,7 +40,8 @@ function buildRequestsQuery(permissions: { canViewApiKeys: boolean; canViewChann
                   channel {
                     id
                     name
-                  }`
+                  }
+                  channelAPIKeyIndex`
     : '';
 
   return `
@@ -75,6 +76,7 @@ function buildRequestsQuery(permissions: { canViewApiKeys: boolean; canViewChann
                   id
                   createdAt
                   modelID
+                  upstreamModelID
                   format
                   status
                   reasoningEffort
@@ -148,6 +150,7 @@ function buildRequestDetailQuery(permissions: { canViewApiKeys: boolean; canView
           contentSaved
           contentStorageKey
           requestHeaders
+          responseHeaders
           requestBody
           responseBody
           responseChunks
@@ -210,6 +213,7 @@ function buildRequestDetailPollingQuery(permissions: { canViewApiKeys: boolean; 
           dataStorageID
           contentSaved
           contentStorageKey
+          responseHeaders
           status
           format
           metricsReasoningDurationMs
@@ -228,7 +232,8 @@ function buildRequestExecutionsQuery(permissions: { canViewChannels: boolean }) 
                   type
                   baseURL
               }
-              channelAPIKeySuffix`
+              channelAPIKeySuffix
+              channelAPIKeyIndex`
     : '';
 
   return `
@@ -249,9 +254,11 @@ function buildRequestExecutionsQuery(permissions: { canViewChannels: boolean }) 
                 updatedAt
                 requestID${channelFields}
                 modelID
+                upstreamModelID
                 projectID
                 dataStorageID
                 requestHeaders
+                responseHeaders
                 requestBody
                 responseBody
                 responseChunks

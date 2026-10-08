@@ -24,6 +24,7 @@ import (
 // credentials, transport headers, and protocol-selection headers are never copied.
 var codexResponsesPassThroughHeaders = []string{
 	"X-Codex-Turn-Metadata",
+	"X-Codex-Turn-State",
 	"X-Codex-Window-Id",
 	"X-Client-Request-Id",
 	"X-Codex-Beta-Features",
@@ -115,7 +116,15 @@ func applyPassThroughRequestBody(outbound *PersistentOutboundTransformer, system
 			log.String("api_format", request.APIFormat),
 		)
 
-		body, err := mergePassThroughRequestBody(llmReq.RawRequest.Body, llmReq.APIFormat, llmReq.Model)
+		body, err := mergePassThroughRequestBodyWithPromptProtection(
+			llmReq.RawRequest.Body,
+			llmReq.APIFormat,
+			llmReq.Model,
+			outbound.state.PromptProtectionMaskRules,
+		)
+		if err == nil && outbound.state.PromptProtectionBodyCheck != nil {
+			err = outbound.state.PromptProtectionBodyCheck.validate(ctx, body)
+		}
 		if err != nil {
 			log.Warn(ctx, "failed to merge pass-through body, keeping outbound body",
 				log.String("channel", channel.Name),
@@ -247,6 +256,7 @@ func passThroughBodyNeedsModelPatch(apiFormat llm.APIFormat) bool {
 		llm.APIFormatOpenAIEmbedding,
 		llm.APIFormatOpenAIModeration,
 		llm.APIFormatOpenAIAlphaSearch,
+		llm.APIFormatOpenAIDecisions,
 		llm.APIFormatOpenAIImageGeneration,
 		llm.APIFormatOpenAIVideo,
 		llm.APIFormatJinaEmbedding,
@@ -258,7 +268,8 @@ func passThroughBodyNeedsModelPatch(apiFormat llm.APIFormat) bool {
 		// Image edits submitted as application/json carry a top-level model field.
 		// Multipart edit bodies never reach this point (passThroughBodySupported
 		// rejects them), so sjson patching only ever runs on JSON payloads.
-		llm.APIFormatOpenAIImageEdit:
+		llm.APIFormatOpenAIImageEdit,
+		llm.APIFormatTypeSafeSystemOne:
 		return true
 	default:
 		return false
@@ -301,8 +312,10 @@ func applyUserAgentPassThrough(outbound *PersistentOutboundTransformer, systemSe
 					request.Headers.Set("User-Agent", clientUA)
 				}
 			}
-		} else {
-			// Pass-through disabled: use AxonHub's default User-Agent
+		} else if request.Headers.Get("User-Agent") == "" {
+			// Pass-through disabled: use AxonHub's default User-Agent, unless the
+			// outbound transformer already set a provider-required one (e.g.
+			// GitHubCopilotChat on Copilot channels).
 			request.Headers.Set("User-Agent", "axonhub/1.0")
 		}
 
@@ -345,8 +358,9 @@ func applyPassThroughResponse(outbound *PersistentOutboundTransformer, systemSer
 
 // captureRawProviderStream fans out raw provider stream events to both the pipeline
 // (for transforms and LLM middlewares like connection tracking, performance recording)
-// and a pass-through channel. The pipeline receives events via pipelineCh, while
-// raw events are stored on state.RawStreamCh for pass-through delivery.
+// and the pass-through consumer. The pipeline receives events via pipelineCh. Raw events
+// are held on state.RawStreamBacklog until applyPassThroughStream attaches the consumer,
+// and are delivered via state.RawStreamCh afterwards.
 func captureRawProviderStream(outbound *PersistentOutboundTransformer, systemService *biz.SystemService) pipeline.Middleware {
 	return pipeline.OnRawStream("capture-raw-provider-stream", func(ctx context.Context, stream streams.Stream[*httpclient.StreamEvent]) (streams.Stream[*httpclient.StreamEvent], error) {
 		if !outbound.isPassThroughEnabled(ctx, systemService) {
@@ -358,6 +372,9 @@ func captureRawProviderStream(outbound *PersistentOutboundTransformer, systemSer
 		pipelineCh := make(chan *httpclient.StreamEvent, 64)
 		rawStreamCh := make(chan *httpclient.StreamEvent, 64)
 		outbound.state.RawStreamCh = rawStreamCh
+
+		backlog := &rawStreamBacklog{}
+		outbound.state.RawStreamBacklog = backlog
 
 		// Per-attempt local error storage: each attempt writes to its own variable so
 		// concurrent defers from an abandoned goroutine and the new attempt's goroutine
@@ -381,15 +398,20 @@ func captureRawProviderStream(outbound *PersistentOutboundTransformer, systemSer
 
 		go func() {
 			defer func() {
+				backlog.mu.Lock()
 				if r := recover(); r != nil {
 					log.Warn(ctx, "captureRawProviderStream goroutine panicked, recovering",
 						log.Any("panic", r),
 						log.String("channel", channel.Name),
 					)
 					rawStreamErr = fmt.Errorf("passthrough stream panic: %v", r)
-				} else {
+				} else if rawStreamErr == nil {
 					rawStreamErr = stream.Err()
+					if rawStreamErr == nil {
+						rawStreamErr = ctx.Err()
+					}
 				}
+				backlog.mu.Unlock()
 
 				close(pipelineCh)
 				close(rawStreamCh)
@@ -413,6 +435,14 @@ func captureRawProviderStream(outbound *PersistentOutboundTransformer, systemSer
 				}
 
 				event := stream.Current()
+				held, err := backlog.hold(event)
+				if err != nil {
+					backlog.mu.Lock()
+					rawStreamErr = err
+					backlog.mu.Unlock()
+
+					return
+				}
 				// Use blocking sends so events are not silently dropped when a
 				// consumer is slower than the upstream provider. Bail out on
 				// attempt cancellation (retry) or request cancellation to avoid
@@ -426,6 +456,11 @@ func captureRawProviderStream(outbound *PersistentOutboundTransformer, systemSer
 					return
 				}
 
+				// Nothing drains rawStreamCh until the pass-through consumer attaches.
+				if held {
+					continue
+				}
+
 				select {
 				case rawStreamCh <- event:
 				case <-attemptCtx.Done():
@@ -437,7 +472,7 @@ func captureRawProviderStream(outbound *PersistentOutboundTransformer, systemSer
 			}
 		}()
 
-		return &passThroughChannelStream{ctx: ctx, ch: pipelineCh, errRef: &rawStreamErr, cancel: closeStream}, nil
+		return &passThroughChannelStream{ctx: ctx, ch: pipelineCh, errRef: &rawStreamErr, errMu: &backlog.mu, cancel: closeStream}, nil
 	})
 }
 
@@ -460,22 +495,97 @@ func applyPassThroughStream(outbound *PersistentOutboundTransformer, systemServi
 		errRef := outbound.state.RawStreamErrRef
 		cancel := outbound.state.RawStreamCancel
 
+		// Events captured while the pipeline pre-read the attempt precede the channel.
+		var held []*httpclient.StreamEvent
+		var errMu *sync.Mutex
+		if backlog := outbound.state.RawStreamBacklog; backlog != nil {
+			held = backlog.attach()
+			errMu = &backlog.mu
+		}
+
 		channel := outbound.GetCurrentChannel()
 
 		log.Debug(ctx, "applying pass-through stream",
 			log.String("channel", channel.Name),
+			log.Int("held_events", len(held)),
 		)
 
 		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Warn(ctx, "pass-through pipeline drain goroutine panicked, recovering",
+						log.Any("panic", r),
+						log.String("channel", channel.Name),
+					)
+				}
+			}()
+			defer stream.Close()
+
 			for stream.Next() {
 				_ = stream.Current()
 			}
-
-			stream.Close()
 		}()
 
-		return &passThroughChannelStream{ctx: ctx, ch: rawCh, errRef: errRef, cancel: cancel}, nil
+		rawStream := &passThroughChannelStream{ctx: ctx, ch: rawCh, errRef: errRef, errMu: errMu, cancel: cancel}
+
+		return streams.PrependStream(rawStream, held...), nil
 	})
+}
+
+// rawStreamBacklog holds the raw provider events of one attempt until the pass-through
+// consumer attaches. Before that point the pipeline may still be pre-reading the attempt
+// (first-event timeout, empty-response detection, retry before the first content event)
+// and nothing drains RawStreamCh, so blocking on it would stall the pre-read as soon as
+// the channel buffer fills. Raw count and bytes are bounded before pipeline delivery,
+// including events filtered by the transformer and retained by persistence.
+type rawStreamBacklog struct {
+	mu       sync.Mutex
+	attached bool
+	events   []*httpclient.StreamEvent
+	bytes    int
+}
+
+const (
+	maxRawPreAttachEvents = 1024
+	maxRawPreAttachBytes  = 8 * 1024 * 1024
+)
+
+var errRawPreAttachBudgetExceeded = fmt.Errorf("pass-through pre-attachment raw event budget exceeded: %w", pipeline.ErrPreCommitBufferExceeded)
+
+// hold keeps event for a consumer that has not attached yet. It reports false once the
+// consumer is attached, in which case the caller delivers the event via RawStreamCh.
+func (b *rawStreamBacklog) hold(event *httpclient.StreamEvent) (bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.attached {
+		return false, nil
+	}
+
+	size := 0
+	if event != nil {
+		size = len(event.Data) + len(event.Type) + len(event.LastEventID)
+	}
+	if len(b.events) >= maxRawPreAttachEvents || size > maxRawPreAttachBytes-b.bytes {
+		return false, errRawPreAttachBudgetExceeded
+	}
+	b.bytes += size
+	b.events = append(b.events, event)
+
+	return true, nil
+}
+
+// attach hands the held events over to the consumer; every later event is delivered
+// via RawStreamCh, so the consumer reads the held events first to preserve order.
+func (b *rawStreamBacklog) attach() []*httpclient.StreamEvent {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.attached = true
+	events := b.events
+	b.events = nil
+
+	return events
 }
 
 // passThroughChannelStream wraps a channel as a Stream.
@@ -486,6 +596,7 @@ type passThroughChannelStream struct {
 	ch      <-chan *httpclient.StreamEvent
 	current *httpclient.StreamEvent
 	errRef  *error
+	errMu   *sync.Mutex
 	cancel  context.CancelFunc
 	once    sync.Once
 	ctxDone bool
@@ -555,8 +666,15 @@ func (s *passThroughChannelStream) nextBuffered() bool {
 func (s *passThroughChannelStream) Current() *httpclient.StreamEvent { return s.current }
 
 func (s *passThroughChannelStream) Err() error {
-	if s.errRef != nil {
+	if s.errMu != nil {
+		s.errMu.Lock()
+		defer s.errMu.Unlock()
+	}
+	if s.errRef != nil && *s.errRef != nil {
 		return *s.errRef
+	}
+	if s.ctx != nil {
+		return s.ctx.Err()
 	}
 
 	return nil

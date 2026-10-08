@@ -72,6 +72,20 @@ func (_c *RequestCreate) SetNillableAPIKeyID(v *int) *RequestCreate {
 	return _c
 }
 
+// SetUserID sets the "user_id" field.
+func (_c *RequestCreate) SetUserID(v int) *RequestCreate {
+	_c.mutation.SetUserID(v)
+	return _c
+}
+
+// SetNillableUserID sets the "user_id" field if the given value is not nil.
+func (_c *RequestCreate) SetNillableUserID(v *int) *RequestCreate {
+	if v != nil {
+		_c.SetUserID(*v)
+	}
+	return _c
+}
+
 // SetProjectID sets the "project_id" field.
 func (_c *RequestCreate) SetProjectID(v int) *RequestCreate {
 	_c.mutation.SetProjectID(v)
@@ -171,6 +185,12 @@ func (_c *RequestCreate) SetRequestHeaders(v objects.JSONRawMessage) *RequestCre
 // SetRequestBody sets the "request_body" field.
 func (_c *RequestCreate) SetRequestBody(v objects.JSONRawMessage) *RequestCreate {
 	_c.mutation.SetRequestBody(v)
+	return _c
+}
+
+// SetResponseHeaders sets the "response_headers" field.
+func (_c *RequestCreate) SetResponseHeaders(v objects.JSONRawMessage) *RequestCreate {
+	_c.mutation.SetResponseHeaders(v)
 	return _c
 }
 
@@ -582,6 +602,10 @@ func (_c *RequestCreate) createSpec() (*Request, *sqlgraph.CreateSpec) {
 		_spec.SetField(request.FieldUpdatedAt, field.TypeTime, value)
 		_node.UpdatedAt = value
 	}
+	if value, ok := _c.mutation.UserID(); ok {
+		_spec.SetField(request.FieldUserID, field.TypeInt, value)
+		_node.UserID = &value
+	}
 	if value, ok := _c.mutation.Source(); ok {
 		_spec.SetField(request.FieldSource, field.TypeEnum, value)
 		_node.Source = value
@@ -605,6 +629,10 @@ func (_c *RequestCreate) createSpec() (*Request, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.RequestBody(); ok {
 		_spec.SetField(request.FieldRequestBody, field.TypeJSON, value)
 		_node.RequestBody = value
+	}
+	if value, ok := _c.mutation.ResponseHeaders(); ok {
+		_spec.SetField(request.FieldResponseHeaders, field.TypeJSON, value)
+		_node.ResponseHeaders = value
 	}
 	if value, ok := _c.mutation.ResponseBody(); ok {
 		_spec.SetField(request.FieldResponseBody, field.TypeJSON, value)
@@ -861,6 +889,24 @@ func (u *RequestUpsert) ClearRequestHeaders() *RequestUpsert {
 	return u
 }
 
+// SetResponseHeaders sets the "response_headers" field.
+func (u *RequestUpsert) SetResponseHeaders(v objects.JSONRawMessage) *RequestUpsert {
+	u.Set(request.FieldResponseHeaders, v)
+	return u
+}
+
+// UpdateResponseHeaders sets the "response_headers" field to the value that was provided on create.
+func (u *RequestUpsert) UpdateResponseHeaders() *RequestUpsert {
+	u.SetExcluded(request.FieldResponseHeaders)
+	return u
+}
+
+// ClearResponseHeaders clears the value of the "response_headers" field.
+func (u *RequestUpsert) ClearResponseHeaders() *RequestUpsert {
+	u.SetNull(request.FieldResponseHeaders)
+	return u
+}
+
 // SetResponseBody sets the "response_body" field.
 func (u *RequestUpsert) SetResponseBody(v objects.JSONRawMessage) *RequestUpsert {
 	u.Set(request.FieldResponseBody, v)
@@ -1106,6 +1152,9 @@ func (u *RequestUpsertOne) UpdateNewValues() *RequestUpsertOne {
 		if _, exists := u.create.mutation.APIKeyID(); exists {
 			s.SetIgnore(request.FieldAPIKeyID)
 		}
+		if _, exists := u.create.mutation.UserID(); exists {
+			s.SetIgnore(request.FieldUserID)
+		}
 		if _, exists := u.create.mutation.ProjectID(); exists {
 			s.SetIgnore(request.FieldProjectID)
 		}
@@ -1202,6 +1251,27 @@ func (u *RequestUpsertOne) UpdateRequestHeaders() *RequestUpsertOne {
 func (u *RequestUpsertOne) ClearRequestHeaders() *RequestUpsertOne {
 	return u.Update(func(s *RequestUpsert) {
 		s.ClearRequestHeaders()
+	})
+}
+
+// SetResponseHeaders sets the "response_headers" field.
+func (u *RequestUpsertOne) SetResponseHeaders(v objects.JSONRawMessage) *RequestUpsertOne {
+	return u.Update(func(s *RequestUpsert) {
+		s.SetResponseHeaders(v)
+	})
+}
+
+// UpdateResponseHeaders sets the "response_headers" field to the value that was provided on create.
+func (u *RequestUpsertOne) UpdateResponseHeaders() *RequestUpsertOne {
+	return u.Update(func(s *RequestUpsert) {
+		s.UpdateResponseHeaders()
+	})
+}
+
+// ClearResponseHeaders clears the value of the "response_headers" field.
+func (u *RequestUpsertOne) ClearResponseHeaders() *RequestUpsertOne {
+	return u.Update(func(s *RequestUpsert) {
+		s.ClearResponseHeaders()
 	})
 }
 
@@ -1653,6 +1723,9 @@ func (u *RequestUpsertBulk) UpdateNewValues() *RequestUpsertBulk {
 			if _, exists := b.mutation.APIKeyID(); exists {
 				s.SetIgnore(request.FieldAPIKeyID)
 			}
+			if _, exists := b.mutation.UserID(); exists {
+				s.SetIgnore(request.FieldUserID)
+			}
 			if _, exists := b.mutation.ProjectID(); exists {
 				s.SetIgnore(request.FieldProjectID)
 			}
@@ -1750,6 +1823,27 @@ func (u *RequestUpsertBulk) UpdateRequestHeaders() *RequestUpsertBulk {
 func (u *RequestUpsertBulk) ClearRequestHeaders() *RequestUpsertBulk {
 	return u.Update(func(s *RequestUpsert) {
 		s.ClearRequestHeaders()
+	})
+}
+
+// SetResponseHeaders sets the "response_headers" field.
+func (u *RequestUpsertBulk) SetResponseHeaders(v objects.JSONRawMessage) *RequestUpsertBulk {
+	return u.Update(func(s *RequestUpsert) {
+		s.SetResponseHeaders(v)
+	})
+}
+
+// UpdateResponseHeaders sets the "response_headers" field to the value that was provided on create.
+func (u *RequestUpsertBulk) UpdateResponseHeaders() *RequestUpsertBulk {
+	return u.Update(func(s *RequestUpsert) {
+		s.UpdateResponseHeaders()
+	})
+}
+
+// ClearResponseHeaders clears the value of the "response_headers" field.
+func (u *RequestUpsertBulk) ClearResponseHeaders() *RequestUpsertBulk {
+	return u.Update(func(s *RequestUpsert) {
+		s.ClearResponseHeaders()
 	})
 }
 

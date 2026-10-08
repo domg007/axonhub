@@ -82,6 +82,7 @@ func (Channel) Fields() []ent.Field {
 				"burncloud",
 				"modelscope",
 				"bailian",
+				"bailian_responses",
 				"bailian_anthropic",
 				"moonshot_coding",
 				"jina",
@@ -108,6 +109,7 @@ func (Channel) Fields() []ent.Field {
 				"zenmux_video",
 				"commandcode",
 				"commandcode_anthropic",
+				"typesafe",
 			).
 			Annotations(
 				entgql.OrderField("TYPE"),
