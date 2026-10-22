@@ -40,6 +40,7 @@ type Handlers struct {
 	OIDC           *api.OIDCHandlers
 	RequestPreview *api.RequestPreviewHandlers
 	ManualSync     *api.ManualSyncHandlers
+	ModelSticky    *api.ModelStickyHandlers
 }
 
 type Services struct {
@@ -107,6 +108,7 @@ func SetupRoutes(server *Server, handlers Handlers, client *ent.Client, services
 	}
 
 	adminGroup := server.Group("/admin", middleware.WithJWTAuth(services.AuthService), middleware.WithProjectID())
+	handlers.ModelSticky.RegisterRoutes(adminGroup)
 	// 管理员路由 - 使用 JWT 认证
 	{
 		adminGroup.GET("/playground", middleware.WithTimeout(server.Config.RequestTimeout), func(c *gin.Context) {

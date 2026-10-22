@@ -499,5 +499,21 @@
   "quota.label.booster_balance": "Booster 余额",
   "quota.label.monthly_spend": "本月消费",
   "quota.provider.apertis": "Apertis",
-  "system.quota.collection.providers.ollama": "Ollama"
+  "system.quota.collection.providers.ollama": "Ollama",
+  "system.retry.loadBalancerStrategy.options.modelSticky": "固定渠道（API Key＋模型）",
+  "system.retry.loadBalancerStrategy.documentation.model-sticky": "每个 API Key＋映射后模型固定一个渠道，仅可重试故障耗尽配置次数后切换。客户端再次请求接续未完成的失败轮次；渠道冷却从30秒翻倍至最多10分钟。不自动回切，不因该策略故障自动禁用渠道或上游凭证；忽略对话/线程粘性。运行态仅保留于当前进程。",
+  "system.retry.modelSticky.title": "固定渠道运行态管理",
+  "system.retry.modelSticky.description": "每行对应一个 API Key＋映射后模型，首次请求后出现，仅工作区所有者可操作。候选来自最近一次通过权限过滤的请求，不代表授予权限。切换会重新试探并清除目标渠道冷却；重置清空本行状态。保存模型或配置档修改也可能清空受影响行。容器重启清空全部运行态。",
+  "system.retry.modelSticky.current": "当前渠道",
+  "system.retry.modelSticky.probing": "试探中／等待有效响应",
+  "system.retry.modelSticky.unpinned": "尚未固定",
+  "system.retry.modelSticky.select": "选择目标渠道",
+  "system.retry.modelSticky.switch": "切换渠道",
+  "system.retry.modelSticky.reset": "重置此组合",
+  "system.retry.modelSticky.failures": "失败次数：{{count}}",
+  "system.retry.modelSticky.until": "冷却截止",
+  "system.retry.modelSticky.refresh": "刷新",
+  "system.retry.modelSticky.empty": "暂无运行态。请先启用固定渠道策略并发送一次请求。",
+  "system.retry.modelSticky.preferred": "已接受手动目标：{{channel}}。有效响应后固定；参数错误或取消不会撤销，真正故障或目标失效时自动接力。",
+  "system.retry.modelSticky.resetHint": "重置会清除此 Key＋模型的固定、失败轮次和全部渠道冷却；手动切换不是永久锁定。"
 }

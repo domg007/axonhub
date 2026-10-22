@@ -903,7 +903,7 @@ function ProfileCard({
               name={`profiles.${profileIndex}.loadBalanceStrategy`}
               render={({ field }) => {
                 const description =
-                  field.value === 'adaptive'
+                  field.value === 'model-sticky' ? t('system.retry.loadBalancerStrategy.documentation.model-sticky') : field.value === 'adaptive'
                     ? t('system.retry.loadBalancerStrategy.documentation.adaptive')
                     : field.value === 'failover'
                       ? t('system.retry.loadBalancerStrategy.documentation.failover')
@@ -939,6 +939,7 @@ function ProfileCard({
                             <SelectItem value='failover'>{t('system.retry.loadBalancerStrategy.options.failover')}</SelectItem>
                             <SelectItem value='circuit-breaker'>{t('system.retry.loadBalancerStrategy.options.circuitBreaker')}</SelectItem>
                             <SelectItem value='round-robin'>{t('system.retry.loadBalancerStrategy.options.roundRobin')}</SelectItem>
+                            <SelectItem value='model-sticky'>{t('system.retry.loadBalancerStrategy.options.modelSticky')}</SelectItem>
                           </SelectContent>
                         </Select>
                       </FormControl>

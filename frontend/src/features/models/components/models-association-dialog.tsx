@@ -376,7 +376,7 @@ function validateWhenGroupList(value: FilterBuilderGroupListValue, ctx: z.Refine
 
 const associationFormSchema = z.object({
   disableDeveloperSettingsInheritance: z.boolean().default(false),
-  loadBalancerStrategy: z.enum(['default', 'adaptive', 'failover', 'circuit-breaker', 'round-robin']).default('default'),
+  loadBalancerStrategy: z.enum(['default', 'adaptive', 'failover', 'circuit-breaker', 'round-robin', 'model-sticky']).default('default'),
   traceStickyMode: z.enum(['default', 'disabled', 'prefer_previous_channel']).default('default'),
   associations: z
     .array(
@@ -1049,6 +1049,7 @@ export function ModelsAssociationDialog() {
                                       <SelectItem value='failover'>{t('system.retry.loadBalancerStrategy.options.failover')}</SelectItem>
                                       <SelectItem value='circuit-breaker'>{t('system.retry.loadBalancerStrategy.options.circuitBreaker')}</SelectItem>
                                       <SelectItem value='round-robin'>{t('system.retry.loadBalancerStrategy.options.roundRobin')}</SelectItem>
+                                      <SelectItem value='model-sticky'>{t('system.retry.loadBalancerStrategy.options.modelSticky')}</SelectItem>
                                     </SelectContent>
                                   </Select>
                                 </FormControl>

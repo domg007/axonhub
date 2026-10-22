@@ -242,11 +242,23 @@ func (s *ProjectService) UpdateProjectProfiles(ctx context.Context, id int, prof
 
 	client := s.entFromContext(ctx)
 
+	var oldFingerprint string
+	{
+		old, err := client.Project.Get(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read project routing state: %w", err)
+		}
+		oldFingerprint = modelStickyProjectFingerprint(old)
+	}
 	proj, err := client.Project.UpdateOneID(id).
 		SetProfiles(&profiles).
 		Save(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update project profiles: %w", err)
+	}
+	if oldFingerprint != "" && oldFingerprint != modelStickyProjectFingerprint(proj) {
+		resetModelStickyProject(ctx, s.db, id, 0)
+		runAfterCommit(ctx, func(ctx context.Context) { s.invalidateProjectCache(ctx, id) })
 	}
 
 	// Invalidate cache

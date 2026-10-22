@@ -95,8 +95,9 @@ func ExtractStatusCodeFromError(err error) int {
 }
 
 type EffectiveRoutingPolicy struct {
-	LoadBalancerStrategy string
-	TraceStickyMode      biz.TraceStickyMode
+	LoadBalancerStrategy     string
+	TraceStickyMode          biz.TraceStickyMode
+	modelStickyQuotaExcluded int
 }
 
 func deriveRoutingPolicy(

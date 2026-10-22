@@ -77,6 +77,10 @@ func (m *rateLimitTracking) OnOutboundRawError(ctx context.Context, err error) {
 		return
 	}
 
+	if modelStickyEnabled(m.outbound.state) {
+		return
+	}
+
 	// Local admission rejections never reached upstream — they must not trigger cooldown.
 	if isChannelQueueError(err) || isLocalRPMExhaustedError(err) {
 		return

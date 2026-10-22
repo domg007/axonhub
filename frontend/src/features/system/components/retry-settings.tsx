@@ -20,6 +20,8 @@ import {
 } from '@/features/channels/data/auto-disable';
 import { useRetryPolicy, useUpdateRetryPolicy, type RetryPolicyInput } from '../data/system';
 
+import { ModelStickyControls } from './model-sticky-controls';
+
 export function RetrySettings() {
   const { t } = useTranslation();
   const { data: retryPolicy, isLoading } = useRetryPolicy();
@@ -219,6 +221,7 @@ export function RetrySettings() {
                         <SelectItem value='failover'>{t('system.retry.loadBalancerStrategy.options.failover')}</SelectItem>
                         <SelectItem value='circuit-breaker'>{t('system.retry.loadBalancerStrategy.options.circuitBreaker')}</SelectItem>
                         <SelectItem value='round-robin'>{t('system.retry.loadBalancerStrategy.options.roundRobin')}</SelectItem>
+                        <SelectItem value='model-sticky'>{t('system.retry.loadBalancerStrategy.options.modelSticky')}</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -397,6 +400,7 @@ export function RetrySettings() {
             </Button>
           </div>
         </form>
+        <ModelStickyControls />
       </CardContent>
     </Card>
   );

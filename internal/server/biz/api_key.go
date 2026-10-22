@@ -406,6 +406,7 @@ func (s *APIKeyService) requireProjectAdmin(ctx context.Context, userID, project
 // UpdateAPIKey updates an existing API key.
 func (s *APIKeyService) UpdateAPIKey(ctx context.Context, id int, input ent.UpdateAPIKeyInput) (*ent.APIKey, error) {
 	var result *ent.APIKey
+	var routingChanged bool
 
 	err := s.RunInTransaction(ctx, func(ctx context.Context) error {
 		client := s.entFromContext(ctx)
@@ -500,6 +501,7 @@ func (s *APIKeyService) UpdateAPIKey(ctx context.Context, id int, input ent.Upda
 			}
 		}
 
+		routingChanged = modelStickyKeyFingerprint(apiKey) != modelStickyKeyFingerprint(updated)
 		result = updated
 
 		return nil
@@ -508,6 +510,10 @@ func (s *APIKeyService) UpdateAPIKey(ctx context.Context, id int, input ent.Upda
 		return nil, err
 	}
 
+	if routingChanged {
+		resetModelStickyKeysAfterCommit(ctx, s.db, result.ID)
+		s.invalidateModelStickyKeyCacheAfterCommit(ctx, result.ID)
+	}
 	s.invalidateAPIKeyCaches(ctx, result.Key)
 
 	return result, nil
@@ -544,6 +550,10 @@ func (s *APIKeyService) UpdateAPIKeyStatus(ctx context.Context, id int, status a
 	}
 
 	// Invalidate cache
+	if existing.Status != apiKey.Status {
+		resetModelStickyKeysAfterCommit(ctx, s.db, apiKey.ID)
+		s.invalidateModelStickyKeyCacheAfterCommit(ctx, apiKey.ID)
+	}
 	s.invalidateAPIKeyCaches(ctx, apiKey.Key)
 
 	return apiKey, nil
@@ -677,6 +687,10 @@ func (s *APIKeyService) UpdateAPIKeyProfiles(ctx context.Context, id int, profil
 	}
 
 	// Invalidate cache
+	if modelStickyKeyFingerprint(existing) != modelStickyKeyFingerprint(apiKey) {
+		resetModelStickyKeysAfterCommit(ctx, s.db, apiKey.ID)
+		s.invalidateModelStickyKeyCacheAfterCommit(ctx, apiKey.ID)
+	}
 	s.invalidateAPIKeyCaches(ctx, apiKey.Key)
 
 	return apiKey, nil
@@ -1008,6 +1022,15 @@ func (s *APIKeyService) GetForRead(ctx context.Context, id *int, key *string, na
 	return apiKey, nil
 }
 
+func (s *APIKeyService) invalidateModelStickyKeyCacheAfterCommit(ctx context.Context, id int) {
+	runAfterCommit(ctx, func(ctx context.Context) {
+		key, err := s.db.APIKey.Get(ctx, id)
+		if err == nil {
+			s.APIKeyCache.Invalidate(buildAPIKeyCacheKey(key.Key))
+		}
+	})
+}
+
 func (s *APIKeyService) invalidateAPIKeyCaches(ctx context.Context, keys ...string) {
 	if len(keys) == 0 {
 		return
@@ -1085,6 +1108,16 @@ func (s *APIKeyService) bulkUpdateAPIKeyStatus(ctx context.Context, ids []int, s
 		return fmt.Errorf("failed to %s API keys: %w", action, err)
 	}
 
+	var changedIDs []int
+	for _, key := range apiKeys {
+		if key.Status != status {
+			changedIDs = append(changedIDs, key.ID)
+		}
+	}
+	resetModelStickyKeysAfterCommit(ctx, s.db, changedIDs...)
+	for _, id := range changedIDs {
+		s.invalidateModelStickyKeyCacheAfterCommit(ctx, id)
+	}
 	s.invalidateAPIKeyCaches(ctx, lo.Map(apiKeys, func(apiKey *ent.APIKey, _ int) string { return apiKey.Key })...)
 	return nil
 }

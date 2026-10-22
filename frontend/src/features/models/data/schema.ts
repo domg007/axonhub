@@ -129,7 +129,7 @@ export const modelAssociationSchema = z.object({
 });
 export type ModelAssociation = z.infer<typeof modelAssociationSchema>;
 
-export function normalizeModelRoutingPolicyValue(value?: string | null): string {
+export function normalizeModelRoutingPolicyValue<T extends string>(value?: T | null): T | 'default' {
   if (!value || value === 'system_default') {
     return 'default';
   }
@@ -140,7 +140,7 @@ export function normalizeModelRoutingPolicyValue(value?: string | null): string 
 export const modelSettingsSchema = z.object({
   disableDeveloperSettingsInheritance: z.boolean().optional().default(false),
   associations: z.array(modelAssociationSchema).optional().default([]),
-  loadBalancerStrategy: z.enum(['default', 'adaptive', 'failover', 'circuit-breaker', 'round-robin']).optional().default('default'),
+  loadBalancerStrategy: z.enum(['default', 'adaptive', 'failover', 'circuit-breaker', 'round-robin', 'model-sticky']).optional().default('default'),
   traceStickyMode: z.enum(['default', 'disabled', 'prefer_previous_channel']).optional().default('default'),
 });
 export type ModelSettings = z.infer<typeof modelSettingsSchema>;

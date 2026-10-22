@@ -195,7 +195,7 @@ export function ApiKeyCreateTemplateDialog({ open, onOpenChange }: ApiKeyCreateT
                         <div>
                           <h4 className='text-sm font-medium'>{t('apikeys.profiles.loadBalancerStrategy')}</h4>
                           <FormDescription className='mt-1 text-xs'>
-                            {field.value === 'adaptive'
+                            {field.value === 'model-sticky' ? t('system.retry.loadBalancerStrategy.documentation.model-sticky') : field.value === 'adaptive'
                               ? t('system.retry.loadBalancerStrategy.documentation.adaptive')
                               : field.value === 'failover'
                                 ? t('system.retry.loadBalancerStrategy.documentation.failover')
@@ -222,6 +222,7 @@ export function ApiKeyCreateTemplateDialog({ open, onOpenChange }: ApiKeyCreateT
                                 {t('system.retry.loadBalancerStrategy.options.circuitBreaker')}
                               </SelectItem>
                               <SelectItem value='round-robin'>{t('system.retry.loadBalancerStrategy.options.roundRobin')}</SelectItem>
+                              <SelectItem value='model-sticky'>{t('system.retry.loadBalancerStrategy.options.modelSticky')}</SelectItem>
                             </SelectContent>
                           </Select>
                         </FormControl>

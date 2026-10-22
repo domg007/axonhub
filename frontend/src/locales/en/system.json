@@ -500,5 +500,21 @@
   "system.quota.routing.modes.REMOVE_ON_EXHAUSTED.description": "Channels with exhausted quota are removed from routing until their quota resets. This is the default mode.",
   "system.quota.routing.modes.BACKPRESSURE": "Usage-Based Backpressure",
   "system.quota.routing.modes.BACKPRESSURE.description": "Channels burning quota faster than the window elapses keep serving only their existing sticky sessions; new sessions are routed to other available channels.",
-  "system.quota.collection.providers.ollama": "Ollama"
+  "system.quota.collection.providers.ollama": "Ollama",
+  "system.retry.loadBalancerStrategy.options.modelSticky": "Fixed channel (API key + model)",
+  "system.retry.loadBalancerStrategy.documentation.model-sticky": "Pins each API key + mapped model to one channel. Only exhausted retryable failures trigger failover. Continues unfinished failure rounds across client requests; 30s exponential cooldown up to 10min. No automatic failback or channel/credential auto-disable. Trace/thread affinity is ignored. State is process-local.",
+  "system.retry.modelSticky.title": "Fixed-channel runtime control",
+  "system.retry.modelSticky.description": "Each row is one API key + mapped model, created after its first request. Only the workspace owner can control these states. Candidates reflect the latest authorized request, not a permission grant. Switching requires a fresh probe and clears the selected channel cooldown; reset clears this row. Saved model/profile edits may also clear the affected rows. Container restart clears all runtime state.",
+  "system.retry.modelSticky.current": "Current channel",
+  "system.retry.modelSticky.probing": "Probing / awaiting a validated response",
+  "system.retry.modelSticky.unpinned": "Not pinned",
+  "system.retry.modelSticky.select": "Choose a channel",
+  "system.retry.modelSticky.switch": "Switch channel",
+  "system.retry.modelSticky.reset": "Reset this route",
+  "system.retry.modelSticky.failures": "Failures: {{count}}",
+  "system.retry.modelSticky.until": "Cooldown until",
+  "system.retry.modelSticky.refresh": "Refresh",
+  "system.retry.modelSticky.empty": "No runtime states yet. Enable the fixed-channel strategy and send a request first.",
+  "system.retry.modelSticky.preferred": "Manual target accepted: {{channel}}. It remains selected until a valid response, retryable failure, removal, or another configuration change.",
+  "system.retry.modelSticky.resetHint": "Reset clears this key + model pin, failure round and all channel cooldowns. Switching is not a permanent lock."
 }

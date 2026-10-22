@@ -17,6 +17,9 @@ import (
 )
 
 func transformOrchestratorError(ctx context.Context, err error, orch *orchestrator.ChatCompletionOrchestrator) *httpclient.Error {
+	if local, ok := modelStickyHTTPError(ctx, err, orch); ok {
+		return local
+	}
 	err = wrapQuotaExhaustedAsResponseError(err)
 	err = orchestrator.ClassifyUpstreamTransportError(err)
 

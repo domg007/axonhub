@@ -1104,7 +1104,14 @@ func (s *SystemService) SetRetryPolicy(ctx context.Context, policy *RetryPolicy)
 		return fmt.Errorf("failed to marshal retry policy: %w", err)
 	}
 
-	return s.setSystemValue(ctx, SystemKeyRetryPolicy, string(jsonBytes))
+	previous := s.RetryPolicyOrDefault(ctx).LoadBalancerStrategy
+	if err := s.setSystemValue(ctx, SystemKeyRetryPolicy, string(jsonBytes)); err != nil {
+		return err
+	}
+	if previous != policy.LoadBalancerStrategy {
+		resetModelStickySystemAfterCommit(ctx, s)
+	}
+	return nil
 }
 
 func normalizeRetryPolicy(policy *RetryPolicy) {
@@ -1125,7 +1132,7 @@ func normalizeRetryPolicy(policy *RetryPolicy) {
 	case LoadBalancerStrategyAdaptive,
 		LoadBalancerStrategyFailover,
 		LoadBalancerStrategyCircuitBreaker,
-		LoadBalancerStrategyRoundRobin:
+		LoadBalancerStrategyRoundRobin, LoadBalancerStrategyModelSticky:
 	default:
 		policy.LoadBalancerStrategy = defaultRetryPolicy.LoadBalancerStrategy
 	}

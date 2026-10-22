@@ -170,6 +170,7 @@ type ChatCompletionResult struct {
 }
 
 func (processor *ChatCompletionOrchestrator) Process(ctx context.Context, request *httpclient.Request) (ChatCompletionResult, error) {
+	ctx = biz.CaptureModelStickyConfig(ctx)
 	var preparedResponsesBody []byte
 	if shared.IsResponsesAPI(ctx) && request != nil && processor.responsesSessions != nil {
 		var sessionID string
@@ -198,6 +199,7 @@ func (processor *ChatCompletionOrchestrator) Process(ctx context.Context, reques
 
 	state := &PersistenceState{
 		APIKey:              apiKey,
+		modelStickyConfig:   biz.ModelStickyRuntime.ConfigSnapshot(ctx),
 		RequestService:      processor.RequestService,
 		UsageLogService:     processor.UsageLogService,
 		SystemService:       processor.SystemService,
@@ -318,6 +320,7 @@ func (processor *ChatCompletionOrchestrator) Process(ctx context.Context, reques
 	)
 
 	result, err := pipe.Process(ctx, request)
+	err = finishModelSticky(ctx, state, result, err)
 	if err != nil {
 		persistCtx, cancel := xcontext.DetachWithTimeout(ctx, time.Second*10)
 		defer cancel()
@@ -356,6 +359,9 @@ func (processor *ChatCompletionOrchestrator) Process(ctx context.Context, reques
 	if result.Stream {
 		if preparedResponsesBody != nil {
 			result.EventStream = processor.responsesSessions.wrapStream(ctx, preparedResponsesBody, result.EventStream)
+			if modelStickyEnabled(state) {
+				result.EventStream = httpclient.WithResponseHeadersAndExpectedChoices(result.EventStream, httpclient.GetResponseHeaders(result.EventStream), ExpectedStreamChoices(state.Request))
+			}
 		}
 		return ChatCompletionResult{
 			ChatCompletion:                nil,
@@ -380,6 +386,9 @@ func maybeEvaluateChannelAPIKeyRulesOnFailure(
 	rawErr error,
 ) {
 	if outbound == nil || outbound.state == nil || outbound.state.ChannelService == nil {
+		return
+	}
+	if modelStickyEnabled(outbound.state) {
 		return
 	}
 	if outbound.state.Perf != nil && outbound.state.Perf.RequestCompleted {

@@ -124,6 +124,7 @@ func (handlers *ChatCompletionHandlers) ChatCompletionWithRequest(c *gin.Context
 			return
 		}
 
+		writeModelStickyRetryAfter(c, err)
 		c.JSON(httpErr.StatusCode, json.RawMessage(httpErr.Body))
 
 		return

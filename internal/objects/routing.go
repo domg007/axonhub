@@ -12,6 +12,7 @@ const (
 	LoadBalancerStrategyFailover       = "failover"
 	LoadBalancerStrategyCircuitBreaker = "circuit-breaker"
 	LoadBalancerStrategyRoundRobin     = "round-robin"
+	LoadBalancerStrategyModelSticky    = "model-sticky"
 
 	TraceStickyModeDisabled              = "disabled"
 	TraceStickyModePreferPreviousChannel = "prefer_previous_channel"
@@ -32,7 +33,7 @@ func IsValidLoadBalancerStrategy(value string) bool {
 		LoadBalancerStrategyAdaptive,
 		LoadBalancerStrategyFailover,
 		LoadBalancerStrategyCircuitBreaker,
-		LoadBalancerStrategyRoundRobin:
+		LoadBalancerStrategyRoundRobin, LoadBalancerStrategyModelSticky:
 		return true
 	default:
 		return false

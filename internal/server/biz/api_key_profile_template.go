@@ -121,6 +121,7 @@ func (s *APIKeyProfileTemplateService) ListTemplates(ctx context.Context, projec
 
 func (s *APIKeyProfileTemplateService) UpdateTemplate(ctx context.Context, id int, input ent.UpdateAPIKeyProfileTemplateInput, profile *objects.APIKeyProfile) (*ent.APIKeyProfileTemplate, error) {
 	var template *ent.APIKeyProfileTemplate
+	var stickyRoutingChanged bool
 	err := s.RunInTransaction(ctx, func(ctx context.Context) error {
 		client := s.entFromContext(ctx)
 		existing, getErr := client.APIKeyProfileTemplate.Get(ctx, id)
@@ -164,6 +165,7 @@ func (s *APIKeyProfileTemplateService) UpdateTemplate(ctx context.Context, id in
 		}
 
 		if publishedProfile != nil {
+			stickyRoutingChanged = modelStickyProfileFingerprint(existing.Profile) != modelStickyProfileFingerprint(publishedProfile)
 			if syncErr := s.syncLinkedProfiles(ctx, existing, template, publishedProfile); syncErr != nil {
 				return syncErr
 			}
@@ -175,6 +177,9 @@ func (s *APIKeyProfileTemplateService) UpdateTemplate(ctx context.Context, id in
 		return nil, err
 	}
 
+	if stickyRoutingChanged {
+		resetModelStickyProject(ctx, s.db, template.ProjectID, template.ID)
+	}
 	return template, nil
 }
 
@@ -209,6 +214,7 @@ func (s *APIKeyProfileTemplateService) DeleteTemplate(ctx context.Context, id in
 
 func (s *APIKeyProfileTemplateService) LoadTemplate(ctx context.Context, templateID, apiKeyID int) (*ent.APIKey, error) {
 	var updatedKey *ent.APIKey
+	var oldStickyFingerprint string
 	err := s.RunInTransaction(ctx, func(ctx context.Context) error {
 		client := s.entFromContext(ctx)
 
@@ -244,6 +250,7 @@ func (s *APIKeyProfileTemplateService) LoadTemplate(ctx context.Context, templat
 			return err
 		}
 
+		oldStickyFingerprint = modelStickyKeyFingerprint(apiKey)
 		existingProfiles := apiKey.Profiles
 		if existingProfiles == nil {
 			existingProfiles = &objects.APIKeyProfiles{}
@@ -273,6 +280,9 @@ func (s *APIKeyProfileTemplateService) LoadTemplate(ctx context.Context, templat
 		return nil, err
 	}
 
+	if oldStickyFingerprint != modelStickyKeyFingerprint(updatedKey) {
+		resetModelStickyKeysAfterCommit(ctx, s.db, updatedKey.ID)
+	}
 	return updatedKey, nil
 }
 

@@ -289,6 +289,7 @@ func (svc *ChannelService) reloadEnabledChannels(ctx context.Context, current []
 }
 
 func (svc *ChannelService) onEnabledChannelsSwap(old, new []*Channel) {
+	ModelStickyRuntime.ChannelCacheSwapped(old, new)
 	svc.cacheVersion.Add(1)
 
 	for _, ch := range new {
@@ -1187,6 +1188,7 @@ func (svc *ChannelService) UpdateChannel(ctx context.Context, id int, input *ent
 	// next request. Calling Forget on every update (including unrelated
 	// settings) would orphan in-flight slots and let the next batch of
 	// requests transiently exceed MaxConcurrent.
+	svc.publishModelStickyChannelAfterCommit(ctx, id)
 	svc.reloadChannelsAfterCommit(ctx)
 
 	return updated, nil
@@ -1214,6 +1216,7 @@ func (svc *ChannelService) UpdateChannelStatus(ctx context.Context, id int, stat
 		return nil, fmt.Errorf("failed to update channel status: %w", err)
 	}
 
+	svc.publishModelStickyChannelAfterCommit(ctx, id)
 	svc.reloadChannelsAfterCommit(ctx)
 
 	return channel, nil
@@ -1284,6 +1287,7 @@ func (svc *ChannelService) DeleteChannel(ctx context.Context, id int) error {
 	}
 
 	svc.forgetLimiter(id)
+	svc.publishModelStickyChannelAfterCommit(ctx, id)
 	svc.reloadChannelsAfterCommit(ctx)
 
 	return nil

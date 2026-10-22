@@ -282,6 +282,7 @@ func (p *pipeline) Process(ctx context.Context, request *httpclient.Request) (*R
 		llmRequest.Stream = originalStream
 
 		result, err := p.processRequest(ctx, llmRequest)
+		p.observeAttempt(ctx, err)
 		if err == nil {
 			return result, nil
 		}

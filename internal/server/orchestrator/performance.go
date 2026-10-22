@@ -64,7 +64,7 @@ func (m *performanceRecording) OnOutboundRawRequest(ctx context.Context, request
 	}
 
 	// Create a new PerformanceRecord instance for each request.
-	perf := biz.PerformanceRecord{}
+	perf := biz.PerformanceRecord{SkipAutoDisable: modelStickyEnabled(m.outbound.state)}
 	perf.StartTime = time.Now()
 	perf.ChannelID = channel.ID
 	perf.Success = false

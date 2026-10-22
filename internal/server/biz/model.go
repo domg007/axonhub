@@ -464,6 +464,14 @@ func (svc *ModelService) UpdateModel(ctx context.Context, id int, input *ent.Upd
 		}
 	}
 
+	var oldStickyModel *ent.Model
+	if input.Settings != nil || input.ModelID != nil || input.Status != nil {
+		var err error
+		oldStickyModel, err = svc.entFromContext(ctx).Model.Get(ctx, id)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read model routing state: %w", err)
+		}
+	}
 	mut := svc.entFromContext(ctx).Model.UpdateOneID(id).
 		SetNillableDeveloper(input.Developer).
 		SetNillableModelID(input.ModelID).
@@ -492,6 +500,14 @@ func (svc *ModelService) UpdateModel(ctx context.Context, id int, input *ent.Upd
 	model, err := mut.Save(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update model: %w", err)
+	}
+	if oldStickyModel != nil && (oldStickyModel.ModelID != model.ModelID || oldStickyModel.Status != model.Status || modelStickyModelFingerprint(oldStickyModel.Settings) != modelStickyModelFingerprint(model.Settings)) {
+		runAfterCommit(ctx, func(context.Context) {
+			ModelStickyRuntime.ResetModel(oldStickyModel.ModelID)
+			if oldStickyModel.ModelID != model.ModelID {
+				ModelStickyRuntime.ResetModel(model.ModelID)
+			}
+		})
 	}
 
 	return model, nil

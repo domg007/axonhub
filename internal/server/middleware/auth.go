@@ -26,6 +26,7 @@ func WithAPIKeyAuth(auth *biz.AuthService) gin.HandlerFunc {
 // WithAPIKeyConfig 中间件用于验证 API key，支持自定义配置.
 func WithAPIKeyConfig(auth *biz.AuthService, config *APIKeyConfig) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		c.Request = c.Request.WithContext(biz.CaptureModelStickyConfig(c.Request.Context()))
 		key, err := ExtractAPIKeyFromRequest(c.Request, config)
 		// DO NOT ALLOW USE NO AUTH API KEY DIRECTLY.
 		if key == biz.NoAuthAPIKeyValue {
@@ -263,6 +264,7 @@ func WithAdminGraphqlAuth(auth *biz.AuthService) gin.HandlerFunc {
 // https://ai.google.dev/api/generate-content?hl=zh-cn#text_gen_text_only_prompt-SHELL
 func WithGeminiKeyAuth(auth *biz.AuthService) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		c.Request = c.Request.WithContext(biz.CaptureModelStickyConfig(c.Request.Context()))
 		key := c.Query("key")
 		if key == "" {
 			var err error

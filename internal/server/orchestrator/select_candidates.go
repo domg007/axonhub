@@ -50,17 +50,7 @@ func selectCandidates(inbound *PersistentInboundTransformer, quotaProvider Provi
 			}
 		}
 
-		// Apply Google native tools filter (only for Gemini native API format)
-		if llmRequest.APIFormat == llm.APIFormatGeminiContents {
-			selector = WithGoogleNativeToolsSelector(selector)
-		}
-
-		// Apply Anthropic native tools filter (only for Anthropic message API format)
-		if llmRequest.APIFormat == llm.APIFormatAnthropicMessage {
-			selector = WithAnthropicNativeToolsSelector(selector)
-		}
-
-		selector = WithStreamPolicySelector(selector)
+		selector = &modelStickyCompatibilitySelector{wrapped: selector, policy: inbound.state.RetryPolicyProvider, key: inbound.state.APIKey}
 
 		gate := NewQuotaRoutingGate(quotaProvider, systemService.QuotaRoutingSettingsOrDefault(ctx))
 
@@ -115,6 +105,9 @@ func selectCandidates(inbound *PersistentInboundTransformer, quotaProvider Provi
 
 		// Store candidates directly (no need to extract channels)
 		inbound.state.ChannelModelsCandidates = candidates
+		if err := prepareModelSticky(ctx, inbound.state, llmRequest); err != nil {
+			return nil, err
+		}
 
 		return llmRequest, nil
 	})

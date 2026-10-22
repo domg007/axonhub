@@ -37,7 +37,8 @@ type ChannelModelsCandidate struct {
 	// DefaultMaxTokens is the AxonHub model card output limit, used as the
 	// Anthropic max_tokens fallback when the client omitted an output cap.
 	// Zero means the catalog model has no usable limit.
-	DefaultMaxTokens int64
+	DefaultMaxTokens    int64
+	modelStickyDefaults []int64 // Per-entry defaults for new-strategy merged associations only.
 }
 
 // ModelRoutingPolicy contains model-level overrides carried from model
@@ -748,6 +749,35 @@ func (s *LoadBalancedSelector) Select(ctx context.Context, req *llm.Request) ([]
 		}
 
 		resolvedPolicy := deriveRoutingPolicy(retryPolicy, s.apiKey, modelRoutingPolicy)
+		if resolvedPolicy.LoadBalancerStrategy == biz.LoadBalancerStrategyModelSticky {
+			*s.effectiveRoutingPolicy = resolvedPolicy
+			if s.quotaGate != nil {
+				key := biz.ModelStickyKey{Model: req.Model}
+				if s.apiKey != nil {
+					key.APIKeyID = s.apiKey.ID
+				}
+				pin, target := biz.ModelStickyRuntime.RoutingTargetIDs(key)
+				hadTarget := false
+				for _, c := range candidates {
+					if c.Channel.ID == target {
+						hadTarget = true
+						break
+					}
+				}
+				candidates = s.quotaGate.Filter(ctx, candidates, req, pin)
+				keptTarget := false
+				for _, c := range candidates {
+					if c.Channel.ID == target {
+						keptTarget = true
+						break
+					}
+				}
+				if hadTarget && !keptTarget {
+					s.effectiveRoutingPolicy.modelStickyQuotaExcluded = target
+				}
+			}
+			return sortModelStickyCandidates(candidates), nil
+		}
 		var appliedStrategy string
 		loadBalancer, appliedStrategy = resolveLoadBalancer(s.loadBalancers, resolvedPolicy.LoadBalancerStrategy)
 		if appliedStrategy != resolvedPolicy.LoadBalancerStrategy {

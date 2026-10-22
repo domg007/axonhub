@@ -523,10 +523,12 @@ func (svc *ChannelService) RecordPerformance(ctx context.Context, perf *Performa
 		}
 	}()
 
-	if perf.Success {
-		svc.clearAutoDisableCountsOnSuccess(perf)
-	} else if !perf.Canceled {
-		svc.evaluateAutoDisableForFailure(ctx, perf)
+	if !perf.SkipAutoDisable {
+		if perf.Success {
+			svc.clearAutoDisableCountsOnSuccess(perf)
+		} else if !perf.Canceled {
+			svc.evaluateAutoDisableForFailure(ctx, perf)
+		}
 	}
 
 	windowSize := svc.performanceWindowSeconds()
@@ -667,6 +669,8 @@ func deriveErrorMessage(errorCode int) string {
 
 // PerformanceRecord contains performance metrics collected during request processing.
 type PerformanceRecord struct {
+	// SkipAutoDisable isolates model/key routing failures from channel-wide rules.
+	SkipAutoDisable    bool
 	ChannelID          int
 	APIKey             string // API key used for the request (sensitive, do not log full value)
 	StartTime          time.Time

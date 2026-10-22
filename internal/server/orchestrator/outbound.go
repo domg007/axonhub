@@ -514,6 +514,9 @@ func (p *PersistentOutboundTransformer) TransformError(ctx context.Context, rawE
 }
 
 func (p *PersistentOutboundTransformer) TransformRequest(ctx context.Context, llmRequest *llm.Request) (*httpclient.Request, error) {
+	if err := checkModelStickyAttempt(p.state); err != nil {
+		return nil, err
+	}
 	// Candidates should already be selected by inbound transformer
 	if len(p.state.ChannelModelsCandidates) == 0 {
 		return nil, errors.New("no candidates available: candidates should be selected by inbound transformer")
@@ -552,6 +555,9 @@ func (p *PersistentOutboundTransformer) TransformRequest(ctx context.Context, ll
 	// Apply channel transform options to create a new request
 	llmRequest = applyTransformOptions(llmRequest, candidate.Channel.Settings)
 	llmRequest = applyReasoningEffortMapping(llmRequest, candidate.Channel.Settings)
+	if p.state.modelSticky != nil && p.state.CurrentModelIndex < len(candidate.modelStickyDefaults) {
+		candidate.DefaultMaxTokens = candidate.modelStickyDefaults[p.state.CurrentModelIndex]
+	}
 	llmRequest = applyModelDefaultMaxTokens(llmRequest, candidate, outboundFormat)
 	for _, middleware := range p.outboundLlmRequestMiddlewares {
 		transformedRequest, err := middleware.OnOutboundLlmRequest(ctx, llmRequest, outboundFormat)
@@ -702,6 +708,9 @@ func (p *PersistentOutboundTransformer) GetRequestedModel() string {
 // HasMoreChannels returns true if there are more candidates available for retry.
 // It implements the pipeline.Retryable interface.
 func (p *PersistentOutboundTransformer) HasMoreChannels() bool {
+	if p.state.modelSticky != nil {
+		return modelStickyRetryable(context.Background(), p.state, p.state.modelSticky.lastErr)
+	}
 	return p.state.CurrentCandidateIndex+1 < len(p.state.ChannelModelsCandidates)
 }
 
@@ -722,7 +731,7 @@ func (p *PersistentOutboundTransformer) resetPassThroughStreamState() {
 
 // NextChannel moves to the next available candidate for retry.
 // It implements the pipeline.Retryable interface.
-func (p *PersistentOutboundTransformer) NextChannel(ctx context.Context) error {
+func (p *PersistentOutboundTransformer) advanceCandidate(ctx context.Context) error {
 	// Cancel any in-flight pass-through stream goroutine from the previous attempt
 	// so it exits promptly and releases its upstream HTTP connection.
 	p.resetPassThroughStreamState()
@@ -778,6 +787,10 @@ func (p *PersistentOutboundTransformer) CanRetry(err error) bool {
 		return false
 	}
 
+	if modelStickyEnabled(p.state) {
+		return modelStickyRetryable(context.Background(), p.state, err)
+	}
+
 	// Empty response detection: allow same-channel retry so the pipeline can
 	// re-execute the request against the same (or next model in the) channel.
 	if errors.Is(err, pipeline.ErrEmptyResponse) ||
@@ -818,6 +831,9 @@ func (p *PersistentOutboundTransformer) CanRetry(err error) bool {
 // This will reset the request execution for the same channel, so that the same request can be retried.
 // It will try the next model in the same channel if available.
 func (p *PersistentOutboundTransformer) PrepareForRetry(ctx context.Context) error {
+	if err := checkModelStickyAttempt(p.state); err != nil {
+		return err
+	}
 	candidate := p.state.CurrentCandidate
 
 	// Reset request execution for the same channel.
