@@ -264,7 +264,19 @@ func modelStickyRetryable(ctx context.Context, state *PersistenceState, err erro
 	if state.CurrentCandidate == nil {
 		return false
 	}
-	return modelStickyModelUnavailable(err) || isRetryableErrorForChannel(err, state.CurrentCandidate.Channel)
+	// Availability-first applies to every upstream error response, without a
+	// status/code/body allowlist. Local routing errors can wrap a response error
+	// too; never turn a configuration/permission fence into another upstream call.
+	var routingErr *ModelStickyRoutingError
+	if errors.As(err, &routingErr) {
+		return false
+	}
+	var rawErr *httpclient.Error
+	var responseErr *llm.ResponseError
+	if errors.As(err, &rawErr) || errors.As(err, &responseErr) {
+		return true
+	}
+	return isRetryableErrorForChannel(err, state.CurrentCandidate.Channel)
 }
 
 // ObserveAttempt is intentionally a no-op for the existing routing strategies.

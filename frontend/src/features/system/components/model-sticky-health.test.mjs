@@ -28,6 +28,10 @@ test('panel and both locales distinguish expired cooldown and temporary manual t
     const doc = data['system.retry.loadBalancerStrategy.documentation.model-sticky'];
     assert.ok(doc.includes(locale === 'en' ? 'configured models' : '自建模型配置'));
     assert.ok(doc.includes(locale === 'en' ? 'not channel tests' : '不用于渠道测试'));
+    assert.ok(doc.includes(locale === 'en' ? 'All upstream errors, regardless of HTTP status' : '所有上游错误不区分HTTP状态码'));
+    const preferred = data['system.retry.modelSticky.preferred'];
+    assert.ok(preferred.includes(locale === 'en' ? 'all upstream errors' : '所有上游错误'));
+    assert.ok(!preferred.includes(locale === 'en' ? 'parameter errors or cancellation do not revoke' : '参数错误或取消不会撤销'));
   }
   assert.equal(
     ts.transpileModule(component, { compilerOptions: { jsx: ts.JsxEmit.ReactJSX }, reportDiagnostics: true }).diagnostics.length,

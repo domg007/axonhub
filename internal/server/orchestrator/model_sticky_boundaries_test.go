@@ -204,7 +204,7 @@ func TestModelStickyStreamFailureClassificationTable(t *testing.T) {
 		cancel bool
 		cool   bool
 	}{
-		{"400", &httpclient.Error{StatusCode: 400}, false, false},
+		{"400", &httpclient.Error{StatusCode: 400}, false, true},
 		{"429", &httpclient.Error{StatusCode: 429}, false, true},
 		{"incomplete", llm.ErrStreamIncomplete, false, true},
 		{"cancel", context.Canceled, true, false},

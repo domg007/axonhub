@@ -139,7 +139,7 @@ func TestModelStickyOrderingDeduplicatesEqualWeights(t *testing.T) {
 	require.Equal(t, []int{5, 2, 3, 4, 1}, ids)
 }
 
-func TestModelStickyMetricsAndNonRetryableErrors(t *testing.T) {
+func TestModelStickyMetricsAndUpstreamFailureRetry(t *testing.T) {
 	s := stickyTestState(1)
 	s.CurrentCandidate = s.ChannelModelsCandidates[0]
 	out := &PersistentOutboundTransformer{state: s}
@@ -147,7 +147,7 @@ func TestModelStickyMetricsAndNonRetryableErrors(t *testing.T) {
 	_, err := m.OnOutboundRawRequest(context.Background(), &httpclient.Request{})
 	require.NoError(t, err)
 	require.True(t, s.Perf.SkipAutoDisable)
-	require.False(t, modelStickyRetryable(context.Background(), s, &httpclient.Error{StatusCode: 400}))
+	require.True(t, modelStickyRetryable(context.Background(), s, &httpclient.Error{StatusCode: 400}))
 	require.False(t, modelStickyRetryable(context.Background(), s, context.Canceled))
 	require.True(t, modelStickyRetryable(context.Background(), s, pipeline.ErrNonStreamResponseTimeout))
 }
@@ -190,7 +190,7 @@ func TestModelStickyContextCancellationReleasesProbe(t *testing.T) {
 	require.True(t, errors.Is(ctx.Err(), context.Canceled))
 }
 
-func TestModelStickyExplicitModelErrorsNotArbitrary404(t *testing.T) {
+func TestModelSticky404RetriesRegardlessOfErrorBody(t *testing.T) {
 	s := stickyTestState(1)
 	s.CurrentCandidate = s.ChannelModelsCandidates[0]
 	for _, test := range []struct {
@@ -199,9 +199,9 @@ func TestModelStickyExplicitModelErrorsNotArbitrary404(t *testing.T) {
 	}{
 		{`{"error":{"code":"model_not_found"}}`, true},
 		{`{"error":{"type":"not_found_error","message":"model: claude-test"}}`, true},
-		{`{"error":{"type":"not_found_error","message":"file: missing"}}`, false},
-		{`{"error":{"code":"context_length_exceeded"}}`, false},
-		{`{"error":{"code":"content_policy_violation"}}`, false},
+		{`{"error":{"type":"not_found_error","message":"file: missing"}}`, true},
+		{`{"error":{"code":"context_length_exceeded"}}`, true},
+		{`{"error":{"code":"content_policy_violation"}}`, true},
 	} {
 		require.Equal(t, test.want, modelStickyRetryable(context.Background(), s, &httpclient.Error{StatusCode: 404, Body: []byte(test.body)}), test.body)
 	}

@@ -29,7 +29,7 @@ func TestModelStickyFinalRequestSelectedBeforeSettingsChangeMustNotRecreateOldRo
 	require.Empty(t, biz.ModelStickyRuntime.Snapshots())
 }
 
-func TestModelStickyFinalManualTargetMustSurviveNonFaultRequest(t *testing.T) {
+func TestModelStickyFinalManualTargetRelaysAfterUpstream400(t *testing.T) {
 	stickyFreshRuntime(t)
 	ctx := context.Background()
 	seed := stickyTestState(2)
@@ -41,9 +41,9 @@ func TestModelStickyFinalManualTargetMustSurviveNonFaultRequest(t *testing.T) {
 	require.Equal(t, 2, bad.modelSticky.lease.ChannelID)
 	bad.CurrentCandidate = bad.ChannelModelsCandidates[0]
 	require.Error(t, finishModelSticky(ctx, bad, nil, &httpclient.Error{StatusCode: 400}))
-	require.Empty(t, biz.ModelStickyRuntime.Snapshots()[0].Cooldowns, "parameter error is not a channel failure")
+	require.Len(t, biz.ModelStickyRuntime.Snapshots()[0].Cooldowns, 1, "all upstream error responses now record combination-level failure")
 	next := stickyTestState(2)
 	require.NoError(t, prepareModelSticky(ctx, next, &llm.Request{Model: "A"}))
 	defer next.modelSticky.release(false, false)
-	require.Equal(t, 2, next.modelSticky.lease.ChannelID, "manual target should not disappear because of an ordinary invalid request")
+	require.Equal(t, 1, next.modelSticky.lease.ChannelID, "failed manual target must relay even for upstream 400")
 }

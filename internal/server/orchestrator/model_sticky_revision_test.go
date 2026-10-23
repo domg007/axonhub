@@ -41,19 +41,28 @@ func TestReviewStickyStreamPreservesExpectedChoices(t *testing.T) {
 	}
 }
 
-func TestReviewStickyStream400DoesNotCooldown(t *testing.T) {
+func TestReviewStickyStream400CoolsAndNextRequestRelays(t *testing.T) {
 	stickyFreshRuntime(t)
 	state := stickyTestState(2)
 	if err := prepareModelSticky(context.Background(), state, &llm.Request{Model: "A"}); err != nil {
 		t.Fatal(err)
 	}
+	state.CurrentCandidate = state.ChannelModelsCandidates[0]
 	result := &pipeline.Result{Stream: true, EventStream: &reviewBadRequestStream{streams.SliceStream([]*httpclient.StreamEvent{})}}
 	finishModelSticky(context.Background(), state, result, nil)
 	if err := result.EventStream.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if len(biz.ModelStickyRuntime.Snapshots()[0].Cooldowns) > 0 {
-		t.Fatal("ordinary stream 400 was classified as channel failure and cooled down")
+	if len(biz.ModelStickyRuntime.Snapshots()[0].Cooldowns) != 1 {
+		t.Fatal("upstream stream 400 must record failure without replaying the stream")
+	}
+	next := stickyTestState(2)
+	if err := prepareModelSticky(context.Background(), next, &llm.Request{Model: "A"}); err != nil {
+		t.Fatal(err)
+	}
+	defer next.modelSticky.release(false, false)
+	if next.modelSticky.lease.ChannelID != 2 {
+		t.Fatal("next client request must relay past the failed stream channel")
 	}
 }
 

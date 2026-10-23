@@ -501,7 +501,7 @@
   "quota.provider.apertis": "Apertis",
   "system.quota.collection.providers.ollama": "Ollama",
   "system.retry.loadBalancerStrategy.options.modelSticky": "固定渠道（API Key＋模型）",
-  "system.retry.loadBalancerStrategy.documentation.model-sticky": "仅用于实际命中的自建模型配置，不用于渠道测试、游乐场、指定渠道模型或旧渠道回退。每个 API Key＋映射后模型固定一个渠道；可重试故障耗尽原配置次数，或固定目标实际失效后，在同一自建模型的合法渠道内接力。客户端再次请求接续失败轮次，冷却从30秒翻倍至最多10分钟。不自动回切、不自动禁用渠道或上游凭证；忽略对话/线程粘性，运行态仅在当前进程保留。",
+  "system.retry.loadBalancerStrategy.documentation.model-sticky": "仅用于实际命中的自建模型配置，不用于渠道测试、游乐场、指定渠道模型或旧渠道回退。每个 API Key＋映射后模型固定一个渠道；所有上游错误不区分HTTP状态码，按原配置进行单渠道重试和延迟，耗尽后在同一自建模型的合法渠道内接力；固定目标实际失效也会接力。客户端再次请求接续失败轮次，冷却从30秒翻倍至最多10分钟。不自动回切、不自动禁用渠道或上游凭证；忽略对话/线程粘性，运行态仅在当前进程保留。",
   "system.retry.modelSticky.title": "固定渠道运行态管理",
   "system.retry.modelSticky.description": "每行对应一个 API Key＋映射后自建模型，仅工作区所有者可操作。候选来自最近合法请求，不授予额外权限。手动切换是临时目标，真实故障或目标失效后仍在本模型内接力；只清目标渠道冷却。普通配置保存保留仍有效的固定和失败记录，实际切换策略清受影响状态；重置清空本行全部运行态，容器重启清空全部运行态。",
   "system.retry.modelSticky.current": "当前渠道",
@@ -514,7 +514,7 @@
   "system.retry.modelSticky.until": "冷却截止",
   "system.retry.modelSticky.refresh": "刷新",
   "system.retry.modelSticky.empty": "暂无运行态。请先启用固定渠道策略并发送一次请求。",
-  "system.retry.modelSticky.preferred": "已接受手动目标：{{channel}}。有效响应后固定；参数错误或取消不会撤销，真正故障或目标失效时自动接力。",
+  "system.retry.modelSticky.preferred": "已接受手动目标：{{channel}}。有效响应后固定；所有上游错误按现有重试预算处理后接力。取消或正常提前关闭不会撤销，目标失效时在同一模型内接力。",
   "system.retry.modelSticky.resetHint": "重置会清除此 Key＋模型的固定、失败轮次和全部渠道冷却；手动切换不是永久锁定。",
   "system.retry.modelSticky.failureHistory": "冷却已结束；保留失败历史"
 }
