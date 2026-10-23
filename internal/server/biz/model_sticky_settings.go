@@ -2,8 +2,8 @@ package biz
 
 import (
 	"context"
-
 	"encoding/json"
+
 	"github.com/looplj/axonhub/internal/ent"
 	"github.com/looplj/axonhub/internal/ent/apikey"
 	"github.com/looplj/axonhub/internal/ent/system"
@@ -17,10 +17,8 @@ func resetModelStickyKeysAfterCommit(ctx context.Context, client *ent.Client, id
 	runAfterCommit(ctx, func(ctx context.Context) {
 		keys, err := client.APIKey.Query().Where(apikey.IDIn(ids...)).All(ctx)
 		if err != nil {
-			log.Warn(ctx, "failed to read committed model sticky keys", log.Cause(err))
-			for _, id := range ids {
-				ModelStickyRuntime.ResetKey(id)
-			}
+			log.Warn(ctx, "【新增策略：模型固定渠道】读取已提交的 Key 配置失败，原始错误见详情。", log.Cause(err))
+			ModelStickyRuntime.fenceKeys(ids)
 			return
 		}
 		found := make(map[int]bool, len(keys))
@@ -43,7 +41,8 @@ func resetModelStickyProject(ctx context.Context, client *ent.Client, projectID 
 		if templateID == 0 {
 			project, err := client.Project.Get(ctx, projectID)
 			if err != nil {
-				log.Warn(ctx, "failed to read committed model sticky project", log.Cause(err))
+				log.Warn(ctx, "【新增策略：模型固定渠道】读取已提交的项目配置失败，原始错误见详情。", log.Cause(err))
+				ModelStickyRuntime.fenceProject(projectID)
 				return
 			}
 			ModelStickyRuntime.PublishProject(project)
@@ -51,7 +50,8 @@ func resetModelStickyProject(ctx context.Context, client *ent.Client, projectID 
 		}
 		keys, err := client.APIKey.Query().Where(apikey.ProjectIDEQ(projectID)).All(ctx)
 		if err != nil {
-			log.Warn(ctx, "failed to invalidate model sticky project state", log.Cause(err))
+			log.Warn(ctx, "【新增策略：模型固定渠道】刷新项目固定路由状态失败，原始错误见详情。", log.Cause(err))
+			ModelStickyRuntime.fenceProject(projectID)
 			return
 		}
 		for _, key := range keys {
@@ -71,16 +71,16 @@ func resetModelStickySystemAfterCommit(ctx context.Context, service *SystemServi
 	runAfterCommit(ctx, func(ctx context.Context) {
 		row, err := client.System.Query().Where(system.KeyEQ(SystemKeyRetryPolicy)).Only(ctx)
 		if err != nil {
-			log.Warn(ctx, "failed to read committed sticky retry policy", log.Cause(err))
-			ModelStickyRuntime.ResetSystemInherited()
+			log.Warn(ctx, "【新增策略：模型固定渠道】读取已提交的重试配置失败，原始错误见详情。", log.Cause(err))
+			ModelStickyRuntime.fenceSystemInherited()
 			return
 		}
 		var policy RetryPolicy
 		if err := json.Unmarshal([]byte(row.Value), &policy); err != nil {
-			ModelStickyRuntime.ResetSystemInherited()
+			ModelStickyRuntime.fenceSystemInherited()
 			return
 		}
 		service.invalidateSystemValueCache(ctx, SystemKeyRetryPolicy)
-		ModelStickyRuntime.PublishSystemStrategy(policy.LoadBalancerStrategy)
+		ModelStickyRuntime.publishSystemStrategy(policy.LoadBalancerStrategy, row.UpdatedAt)
 	})
 }

@@ -20,7 +20,7 @@ func (h *ModelStickyHandlers) RegisterRoutes(group *gin.RouterGroup) {
 func modelStickyOwner(c *gin.Context) bool {
 	user, ok := contexts.GetUser(c.Request.Context())
 	if !ok || !user.IsOwner {
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "workspace owner permission required"})
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "【新增策略：模型固定渠道】此管理操作需要工作区所有者权限。"})
 		return false
 	}
 	return true
@@ -38,13 +38,13 @@ func (h *ModelStickyHandlers) Control(c *gin.Context) {
 	var input struct {
 		APIKeyID  int    `json:"apiKeyID" binding:"required,min=1"`
 		Model     string `json:"model" binding:"required"`
-		ChannelID int    `json:"channelID" binding:"min=0"`
+		ChannelID *int   `json:"channelID" binding:"required,min=0"`
 	}
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid routing control input"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "【新增策略：模型固定渠道】切换参数无效，请检查 Key、模型及渠道信息。"})
 		return
 	}
-	if err := biz.ModelStickyRuntime.Control(biz.ModelStickyKey{APIKeyID: input.APIKeyID, Model: input.Model}, input.ChannelID); err != nil {
+	if err := biz.ModelStickyRuntime.Control(biz.ModelStickyKey{APIKeyID: input.APIKeyID, Model: input.Model}, *input.ChannelID); err != nil {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}

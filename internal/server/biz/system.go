@@ -1301,7 +1301,11 @@ func (s *SystemService) SetModelSettings(ctx context.Context, settings SystemMod
 		return fmt.Errorf("failed to marshal model settings: %w", err)
 	}
 
-	return s.setSystemValue(ctx, SystemKeyModelSettings, string(jsonBytes))
+	if err := s.setSystemValue(ctx, SystemKeyModelSettings, string(jsonBytes)); err != nil {
+		return err
+	}
+	publishModelStickyInheritanceAfterCommit(ctx, s)
+	return nil
 }
 
 func normalizeSystemChannelSettings(setting *SystemChannelSettings) {

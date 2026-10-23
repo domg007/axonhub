@@ -33,7 +33,7 @@ type modelStickyRequest struct {
 }
 
 func modelStickyEnabled(state *PersistenceState) bool {
-	return state != nil && state.RoutingPolicy.LoadBalancerStrategy == biz.LoadBalancerStrategyModelSticky
+	return state != nil && state.APIKey != nil && modelStickyModelPolicy(state.ChannelModelsCandidates) != nil && state.RoutingPolicy.LoadBalancerStrategy == biz.LoadBalancerStrategyModelSticky
 }
 
 func sortModelStickyCandidates(candidates []*ChannelModelsCandidate) []*ChannelModelsCandidate {
@@ -97,11 +97,12 @@ func sortModelStickyCandidates(candidates []*ChannelModelsCandidate) []*ChannelM
 }
 
 func prepareModelSticky(ctx context.Context, state *PersistenceState, req *llm.Request) error {
-	if !modelStickyEnabled(state) {
+	if state == nil || state.RoutingPolicy.LoadBalancerStrategy != biz.LoadBalancerStrategyModelSticky {
 		return nil
 	}
-	if state.APIKey == nil {
-		return errors.New("model sticky routing requires an authenticated API key")
+	if !modelStickyRequestEligible(ctx, state.APIKey, state.ChannelModelsCandidates) {
+		state.RoutingPolicy.LoadBalancerStrategy = biz.LoadBalancerStrategyAdaptive
+		return nil
 	}
 	session := &modelStickyRequest{key: biz.ModelStickyKey{APIKeyID: state.APIKey.ID, Model: req.Model}, keyName: state.APIKey.Name,
 		candidates: state.ChannelModelsCandidates, tried: make(map[int]bool), waitTimeout: 30 * time.Second}
@@ -125,8 +126,8 @@ func prepareModelSticky(ctx context.Context, state *PersistenceState, req *llm.R
 			inherited = false
 		}
 	}
-	if len(session.candidates) > 0 && session.candidates[0].ModelRoutingPolicy != nil {
-		strategy := objects.NormalizeRoutingPolicyValue(session.candidates[0].ModelRoutingPolicy.LoadBalancerStrategy)
+	if policy := resolvedModelRoutingPolicy(ctx, session.candidates); policy != nil {
+		strategy := objects.NormalizeRoutingPolicyValue(policy.LoadBalancerStrategy)
 		if strategy != objects.RoutingPolicyDefault && objects.IsValidLoadBalancerStrategy(strategy) {
 			inherited = false
 		}
@@ -140,6 +141,9 @@ func prepareModelSticky(ctx context.Context, state *PersistenceState, req *llm.R
 	}
 	session.admission = biz.NewModelStickyAdmission(state.modelStickyConfig, state.APIKey, inherited, systemStrategy)
 	session.admission.QuotaExcludedChannelID = state.RoutingPolicy.modelStickyQuotaExcluded
+	if err := populateModelStickyAdmission(ctx, state, req, session.admission); err != nil {
+		return newModelStickyRoutingError(http.StatusConflict, "model_sticky_settings_changed", biz.ErrModelStickySettingsChanged.Error(), 0, err)
+	}
 	state.modelSticky = session
 	candidate, err := session.acquire(ctx, true)
 	if err != nil {
@@ -164,15 +168,15 @@ func (s *modelStickyRequest) acquire(ctx context.Context, fresh bool) (*ChannelM
 	cancel() // Only waiting is bounded; the acquired lease belongs to original ctx.
 	if err != nil {
 		if errors.Is(err, biz.ErrModelStickyNoCandidates) {
-			return nil, newModelStickyRoutingError(http.StatusServiceUnavailable, "model_sticky_no_available_channel", "No available channel remains for this model.", 0, err)
+			return nil, newModelStickyRoutingError(http.StatusServiceUnavailable, "model_sticky_no_available_channel", "当前没有可用候选渠道，请检查模型关联、渠道权限及冷却状态。", 0, err)
 		}
 		var cooling *biz.ModelStickyUnavailable
 		if errors.As(err, &cooling) {
 			seconds := max(1, int((cooling.RetryAfter+time.Second-1)/time.Second))
-			return nil, newModelStickyRoutingError(http.StatusServiceUnavailable, "model_sticky_cooldown", fmt.Sprintf("All eligible channels have been attempted or are cooling down; retry in %d seconds.", seconds), seconds, err)
+			return nil, newModelStickyRoutingError(http.StatusServiceUnavailable, "model_sticky_cooldown", fmt.Sprintf("符合条件的渠道已尝试或处于冷却中，请在 %d 秒后重试。", seconds), seconds, err)
 		}
 		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-			return nil, newModelStickyRoutingError(http.StatusServiceUnavailable, "model_sticky_probe_busy", "Waiting for the current channel probe timed out; retry later.", 1, err)
+			return nil, newModelStickyRoutingError(http.StatusServiceUnavailable, "model_sticky_probe_busy", "等待当前渠道探测超时，本次尚未获得探测执行权，请稍后重试。", 1, err)
 		}
 		if errors.Is(err, biz.ErrModelStickyRequestConflict) {
 			return nil, newModelStickyRoutingError(http.StatusConflict, "model_sticky_request_conflict", err.Error(), 0, err)
@@ -218,7 +222,7 @@ func (s *modelStickyRequest) acquire(ctx context.Context, fresh bool) (*ChannelM
 		}
 	}
 	s.release(false, false)
-	return nil, fmt.Errorf("model sticky selected an unauthorized channel")
+	return nil, fmt.Errorf("【新增策略：模型固定渠道】路由选择结果不在本次授权候选范围内，已阻止调用。")
 }
 
 func (s *modelStickyRequest) release(success, failure bool) {
@@ -275,7 +279,7 @@ func (p *PersistentOutboundTransformer) nextModelStickyChannel(ctx context.Conte
 	retryable := modelStickyRetryable(ctx, p.state, s.lastErr)
 	s.release(false, retryable)
 	if !retryable {
-		return errors.New("model sticky error is not retryable")
+		return errors.New("【新增策略：模型固定渠道】本次错误不符合故障接力条件，不再切换渠道。")
 	}
 	candidate, err := s.acquire(ctx, false)
 	if err != nil {

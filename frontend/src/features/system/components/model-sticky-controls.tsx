@@ -5,6 +5,8 @@ import { useAuthStore } from '@/stores/authStore';
 import { apiRequest } from '@/lib/api-client';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { modelStickyPanelError } from './model-sticky-error';
+import { modelStickyCooldownActive } from './model-sticky-health';
 
 interface StickyRow {
   apiKeyID: number;
@@ -91,14 +93,16 @@ function StickyRouteRow({ row }: { row: StickyRow }) {
           {row.cooldowns.map((health) => (
             <li key={health.channelID}>
               #{health.channelID} · {t('system.retry.modelSticky.failures', { count: health.failures })} ·{' '}
-              {t('system.retry.modelSticky.until')} {new Date(health.until).toLocaleTimeString()}
+              {modelStickyCooldownActive(health.until)
+                ? `${t('system.retry.modelSticky.until')} ${new Date(health.until).toLocaleTimeString()}`
+                : t('system.retry.modelSticky.failureHistory')}
             </li>
           ))}
         </ul>
       )}
       {mutation.error && (
         <p role='alert' className='text-destructive text-sm'>
-          {mutation.error.message}
+          {modelStickyPanelError(mutation.error)}
         </p>
       )}
     </div>
@@ -126,7 +130,7 @@ export function ModelStickyControls() {
       <p className='text-muted-foreground text-sm'>{t('system.retry.modelSticky.description')}</p>
       {query.error && (
         <p role='alert' className='text-destructive text-sm'>
-          {query.error.message}
+          {modelStickyPanelError(query.error)}
         </p>
       )}
       {!query.isPending && !query.error && query.data?.length === 0 && (

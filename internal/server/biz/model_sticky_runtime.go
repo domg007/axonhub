@@ -44,18 +44,22 @@ type ModelStickySnapshot struct {
 }
 
 type modelStickyRoute struct {
-	epoch           uint64
-	pin             int
-	probe           bool
-	probeChannel    int
-	projectID       int
-	preferred       int
-	notify          chan struct{}
-	keyName         string
-	candidates      []ModelStickyCandidate
-	attempted       map[int]bool
-	health          map[int]ModelStickyHealth
-	systemInherited bool
+	epoch                      uint64
+	pin                        int
+	probe                      bool
+	probeChannel               int
+	projectID                  int
+	preferred                  int
+	notify                     chan struct{}
+	keyName                    string
+	candidates                 []ModelStickyCandidate
+	attempted                  map[int]bool
+	health                     map[int]ModelStickyHealth
+	systemInherited            bool
+	modelEntityID              int
+	modelStrategy, keyStrategy string
+	systemStrategy             string
+	validationPending          bool
 }
 
 type ModelStickyManager struct {
@@ -74,13 +78,13 @@ func NewModelStickyManager() *ModelStickyManager {
 // RetryAfter is informational; callers should still respect their own deadlines.
 type ModelStickyUnavailable struct{ RetryAfter time.Duration }
 
-var ErrModelStickyNoCandidates = errors.New("no available model sticky channel remains")
+var ErrModelStickyNoCandidates = errors.New("【新增策略：模型固定渠道】当前没有可用候选渠道，请检查模型关联、渠道权限及冷却状态。")
 
-var ErrModelStickyRequestConflict = errors.New("fixed channel is not eligible for this request; routing state was preserved")
-var ErrModelStickySettingsChanged = errors.New("model sticky settings changed during request")
+var ErrModelStickyRequestConflict = errors.New("【新增策略：模型固定渠道】固定渠道不符合本次请求条件；原固定状态已保留，本次未自动切换渠道。")
+var ErrModelStickySettingsChanged = errors.New("【新增策略：模型固定渠道】路由配置已在请求期间变更，请重新发送请求。")
 
 func (e *ModelStickyUnavailable) Error() string {
-	return fmt.Sprintf("model sticky routing temporarily unavailable; next recovery in %s", e.RetryAfter.Round(time.Second))
+	return fmt.Sprintf("【新增策略：模型固定渠道】候选渠道暂时不可用，请在 %d 秒后重试。", max(1, int((e.RetryAfter+time.Second-1)/time.Second)))
 }
 
 // ModelStickyLease fences late completions using route identity and epoch.
@@ -122,10 +126,6 @@ func (m *ModelStickyManager) Acquire(ctx context.Context, key ModelStickyKey, ke
 			return nil, ErrModelStickySettingsChanged
 		}
 		candidates = m.availableCandidatesLocked(candidates)
-		if len(candidates) == 0 {
-			m.mu.Unlock()
-			return nil, ErrModelStickyNoCandidates
-		}
 		r := m.routes[key]
 		if expected != nil && r != expected {
 			m.mu.Unlock()
@@ -135,17 +135,31 @@ func (m *ModelStickyManager) Acquire(ctx context.Context, key ModelStickyKey, ke
 			r = newModelStickyRoute()
 			m.routes[key] = r
 		}
+		if a, ok := ctx.Value(modelStickyAdmissionContextKey{}).(*ModelStickyAdmission); ok {
+			if a.ModelEntityID != 0 && r.modelEntityID != 0 && a.ModelEntityID != r.modelEntityID {
+				if expected != nil {
+					m.mu.Unlock()
+					return nil, ErrModelStickySettingsChanged
+				}
+				r.advance()
+				r = newModelStickyRoute()
+				m.routes[key] = r
+			}
+			if a.StructuralCandidates != nil {
+				m.reconcileCandidatesLocked(r, m.availableCandidatesLocked(a.StructuralCandidates))
+				r.validationPending = false
+			}
+			m.rememberAdmissionLocked(key, a)
+			r.modelEntityID = a.ModelEntityID
+			r.modelStrategy = a.ModelStrategy
+			r.keyStrategy = a.keyStrategy
+			r.systemStrategy = a.systemStrategy
+		}
 		expected = r
 		if a, ok := ctx.Value(modelStickyAdmissionContextKey{}).(*ModelStickyAdmission); ok && a.QuotaExcludedChannelID != 0 && (r.pin == a.QuotaExcludedChannelID || r.preferred == a.QuotaExcludedChannelID) {
-			id := a.QuotaExcludedChannelID
-			r.attempted[id] = true
-			if r.pin == id {
-				r.pin = 0
+			if r.retireTarget(a.QuotaExcludedChannelID, true) {
+				r.advance()
 			}
-			if r.preferred == id {
-				r.preferred = 0
-			}
-			r.advance()
 		}
 		if a, ok := ctx.Value(modelStickyAdmissionContextKey{}).(*ModelStickyAdmission); ok {
 			r.systemInherited = a.inherited
@@ -164,9 +178,15 @@ func (m *ModelStickyManager) Acquire(ctx context.Context, key ModelStickyKey, ke
 			m.mu.Unlock()
 			return nil, ErrModelStickyRequestConflict
 		}
+		if len(candidates) == 0 {
+			m.mu.Unlock()
+			return nil, ErrModelStickyNoCandidates
+		}
 		// Rejected request-specific candidates must not erase target identity: a
 		// later real channel removal still needs to find and retire that target.
-		r.candidates = append([]ModelStickyCandidate(nil), candidates...)
+		if a, ok := ctx.Value(modelStickyAdmissionContextKey{}).(*ModelStickyAdmission); !ok || a.StructuralCandidates == nil {
+			r.candidates = append([]ModelStickyCandidate(nil), candidates...)
+		}
 		// A concurrent request may have pinned a channel this request already
 		// attempted. Never create a second probe alongside that healthy pin.
 		if r.pin != 0 && tried[r.pin] {
@@ -396,9 +416,12 @@ func (m *ModelStickyManager) Control(key ModelStickyKey, channelID int) error {
 	defer m.mu.Unlock()
 	r := m.routes[key]
 	if r == nil {
-		return errors.New("routing state no longer exists")
+		return errors.New("【新增策略：模型固定渠道】固定状态已不存在，请刷新列表后重试。")
 	}
 	if channelID != 0 {
+		if r.validationPending {
+			return errors.New("【新增策略：模型固定渠道】授权候选正在等待最新请求重新确认，请先发起模型请求后刷新列表。")
+		}
 		found := false
 		for _, c := range r.candidates {
 			if c.ID == channelID && len(m.availableCandidatesLocked([]ModelStickyCandidate{c})) > 0 {
@@ -407,7 +430,7 @@ func (m *ModelStickyManager) Control(key ModelStickyKey, channelID int) error {
 			}
 		}
 		if !found {
-			return errors.New("channel is not in the last authorized candidate set")
+			return errors.New("【新增策略：模型固定渠道】所选渠道不在该 Key 与模型最近确认的授权候选范围内，请刷新后重新选择。")
 		}
 	}
 	if m.config.controls == nil {
@@ -418,6 +441,11 @@ func (m *ModelStickyManager) Control(key ModelStickyKey, channelID int) error {
 	next := newModelStickyRoute()
 	next.systemInherited = r.systemInherited
 	next.projectID = r.projectID
+	next.modelEntityID = r.modelEntityID
+	next.modelStrategy = r.modelStrategy
+	next.keyStrategy = r.keyStrategy
+	next.systemStrategy = r.systemStrategy
+	next.validationPending = r.validationPending
 	next.keyName = r.keyName
 	next.candidates = append([]ModelStickyCandidate(nil), r.candidates...)
 	next.preferred = channelID

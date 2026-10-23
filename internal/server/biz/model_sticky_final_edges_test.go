@@ -217,7 +217,11 @@ func TestModelStickyFinalProfileCommitFailureAndMultipleSaves(t *testing.T) {
 				return
 			}
 			require.NoError(t, tx.Commit())
-			require.Empty(t, ModelStickyRuntime.Snapshots())
+			if mode == "multiple" {
+				require.Equal(t, 2, ModelStickyRuntime.Snapshots()[0].ChannelID)
+			} else {
+				require.Empty(t, ModelStickyRuntime.Snapshots())
+			}
 			saved, err := client.APIKey.Get(ctx, key.ID)
 			require.NoError(t, err)
 			if mode == "multiple" {

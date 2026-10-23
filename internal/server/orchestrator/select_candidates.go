@@ -22,6 +22,7 @@ func selectCandidates(inbound *PersistentInboundTransformer, quotaProvider Provi
 			return llmRequest, nil
 		}
 
+		ctx = context.WithValue(ctx, modelStickyResolutionContextKey{}, &modelStickyResolutionHolder{})
 		selector := inbound.state.CandidateSelector
 
 		// Project-level profile filtering (upper boundary)
@@ -96,17 +97,15 @@ func selectCandidates(inbound *PersistentInboundTransformer, quotaProvider Provi
 			)
 		}
 
+		inbound.state.ChannelModelsCandidates = candidates
+		if err := prepareModelSticky(ctx, inbound.state, llmRequest); err != nil {
+			return nil, err
+		}
 		if len(candidates) == 0 {
 			if gate.DroppedCount() > 0 {
 				return nil, NewQuotaExhaustedError(llmRequest.Model)
 			}
 			return nil, fmt.Errorf("%w: %s", biz.ErrInvalidModel, llmRequest.Model)
-		}
-
-		// Store candidates directly (no need to extract channels)
-		inbound.state.ChannelModelsCandidates = candidates
-		if err := prepareModelSticky(ctx, inbound.state, llmRequest); err != nil {
-			return nil, err
 		}
 
 		return llmRequest, nil

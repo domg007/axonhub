@@ -2,6 +2,7 @@ package biz
 
 import (
 	"context"
+	"reflect"
 	"time"
 
 	"github.com/looplj/axonhub/internal/ent"
@@ -32,40 +33,18 @@ func (m *ModelStickyManager) publishChannelLocked(id int, state modelStickyChann
 	if m.channels == nil {
 		m.channels = make(map[int]modelStickyChannelState)
 	}
-	if old, ok := m.channels[id]; ok && old.updatedAt.After(state.updatedAt) {
-		return
+	if old, ok := m.channels[id]; ok {
+		if old.updatedAt.After(state.updatedAt) {
+			return
+		}
+		if old.enabled == state.enabled && reflect.DeepEqual(old.entries, state.entries) {
+			m.channels[id] = state
+			return
+		}
 	}
 	m.channels[id] = state
 	for _, r := range m.routes {
-		changed := false
-		for _, c := range r.candidates {
-			if c.ID != id {
-				continue
-			}
-			available := m.availableCandidatesLocked([]ModelStickyCandidate{c})
-			if len(available) == 0 {
-				if r.pin == id {
-					r.pin = 0
-					changed = true
-				}
-				if r.preferred == id {
-					r.preferred = 0
-					changed = true
-				}
-				if r.probeChannel == id {
-					changed = true
-				}
-				r.attempted[id] = true
-			} else if len(available[0].Models) != len(c.Models) && (r.pin == id || r.probeChannel == id) {
-				// Partial model removal must fence old attempts too, but a legal model
-				// alternative on the same channel may keep the successful channel pin.
-				changed = true
-			}
-		}
-		if changed {
-			r.advance()
-		}
-		r.candidates = m.availableCandidatesLocked(r.candidates)
+		m.reconcileCandidatesLocked(r, m.availableCandidatesLocked(r.candidates))
 	}
 }
 func (m *ModelStickyManager) ChannelCacheSwapped(old, new []*Channel) {
@@ -132,7 +111,7 @@ func (svc *ChannelService) publishModelStickyChannelAfterCommit(ctx context.Cont
 	runAfterCommit(ctx, func(ctx context.Context) {
 		ch, err := svc.db.Channel.Get(schematype.SkipSoftDelete(ctx), id)
 		if err != nil {
-			log.Warn(ctx, "failed to read committed sticky channel", log.Cause(err))
+			log.Warn(ctx, "【新增策略：模型固定渠道】读取已提交的渠道配置失败，原始错误见详情。", log.Cause(err))
 			return
 		}
 		ModelStickyRuntime.PublishChannel(ch)

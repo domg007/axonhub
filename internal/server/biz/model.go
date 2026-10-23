@@ -464,14 +464,6 @@ func (svc *ModelService) UpdateModel(ctx context.Context, id int, input *ent.Upd
 		}
 	}
 
-	var oldStickyModel *ent.Model
-	if input.Settings != nil || input.ModelID != nil || input.Status != nil {
-		var err error
-		oldStickyModel, err = svc.entFromContext(ctx).Model.Get(ctx, id)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read model routing state: %w", err)
-		}
-	}
 	mut := svc.entFromContext(ctx).Model.UpdateOneID(id).
 		SetNillableDeveloper(input.Developer).
 		SetNillableModelID(input.ModelID).
@@ -501,14 +493,7 @@ func (svc *ModelService) UpdateModel(ctx context.Context, id int, input *ent.Upd
 	if err != nil {
 		return nil, fmt.Errorf("failed to update model: %w", err)
 	}
-	if oldStickyModel != nil && (oldStickyModel.ModelID != model.ModelID || oldStickyModel.Status != model.Status || modelStickyModelFingerprint(oldStickyModel.Settings) != modelStickyModelFingerprint(model.Settings)) {
-		runAfterCommit(ctx, func(context.Context) {
-			ModelStickyRuntime.ResetModel(oldStickyModel.ModelID)
-			if oldStickyModel.ModelID != model.ModelID {
-				ModelStickyRuntime.ResetModel(model.ModelID)
-			}
-		})
-	}
+	svc.publishModelStickyModelsAfterCommit(ctx, id)
 
 	return model, nil
 }
@@ -522,6 +507,7 @@ func (svc *ModelService) UpdateModelStatus(ctx context.Context, id int, status m
 		return nil, fmt.Errorf("failed to update model status: %w", err)
 	}
 
+	svc.publishModelStickyModelsAfterCommit(ctx, id)
 	return model, nil
 }
 
@@ -531,6 +517,7 @@ func (svc *ModelService) DeleteModel(ctx context.Context, id int) error {
 		return fmt.Errorf("failed to delete model: %w", err)
 	}
 
+	svc.publishModelStickyModelsAfterCommit(ctx, id)
 	return nil
 }
 
@@ -544,6 +531,7 @@ func (svc *ModelService) BulkArchiveModels(ctx context.Context, ids []int) error
 		return fmt.Errorf("failed to bulk archive models: %w", err)
 	}
 
+	svc.publishModelStickyModelsAfterCommit(ctx, ids...)
 	return nil
 }
 
@@ -557,6 +545,7 @@ func (svc *ModelService) BulkDisableModels(ctx context.Context, ids []int) error
 		return fmt.Errorf("failed to bulk disable models: %w", err)
 	}
 
+	svc.publishModelStickyModelsAfterCommit(ctx, ids...)
 	return nil
 }
 
@@ -570,6 +559,7 @@ func (svc *ModelService) BulkEnableModels(ctx context.Context, ids []int) error 
 		return fmt.Errorf("failed to bulk enable models: %w", err)
 	}
 
+	svc.publishModelStickyModelsAfterCommit(ctx, ids...)
 	return nil
 }
 
@@ -582,6 +572,7 @@ func (svc *ModelService) BulkDeleteModels(ctx context.Context, ids []int) error 
 		return fmt.Errorf("failed to bulk delete models: %w", err)
 	}
 
+	svc.publishModelStickyModelsAfterCommit(ctx, ids...)
 	return nil
 }
 

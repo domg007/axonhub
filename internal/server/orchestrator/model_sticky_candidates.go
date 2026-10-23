@@ -28,11 +28,7 @@ func (s *modelStickyCompatibilitySelector) Select(ctx context.Context, req *llm.
 	if err != nil {
 		return nil, err
 	}
-	var modelPolicy *ModelRoutingPolicy
-	if len(candidates) > 0 {
-		modelPolicy = candidates[0].ModelRoutingPolicy
-	}
-	sticky := s.policy != nil && deriveRoutingPolicy(s.policy.RetryPolicyOrDefault(ctx), s.key, modelPolicy).LoadBalancerStrategy == biz.LoadBalancerStrategyModelSticky
+	sticky := s.policy != nil && deriveRequestRoutingPolicy(ctx, s.policy.RetryPolicyOrDefault(ctx), s.key, candidates).LoadBalancerStrategy == biz.LoadBalancerStrategyModelSticky
 	var selector CandidateSelector = modelStickyResolvedCandidates{candidates}
 	// Native server tools are not ordinary client function tools. Preserve their
 	// established capability preference instead of inventing unsupported services.
@@ -62,7 +58,7 @@ func (s *modelStickyCompatibilitySelector) Select(ctx context.Context, req *llm.
 		filtered = append(filtered, c)
 	}
 	if len(filtered) == 0 && len(candidates) > 0 && req.RequestType == llm.RequestTypeDecisions {
-		return nil, NewStreamPolicyConflictError(req.Model)
+		return nil, newModelStickyStreamConflictError(req.Model)
 	}
 	return filtered, nil
 }

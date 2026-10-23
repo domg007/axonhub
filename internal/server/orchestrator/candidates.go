@@ -44,8 +44,9 @@ type ChannelModelsCandidate struct {
 // ModelRoutingPolicy contains model-level overrides carried from model
 // resolution into the load-balancing decorator without another database query.
 type ModelRoutingPolicy struct {
-	LoadBalancerStrategy string
-	TraceStickyMode      string
+	LoadBalancerStrategy  string
+	TraceStickyMode       string
+	modelStickyResolution *modelStickyResolution
 }
 
 // resolvedAssociationCandidate keeps the association-level metadata produced by
@@ -114,7 +115,7 @@ func (s *DefaultSelector) Select(ctx context.Context, req *llm.Request) ([]*Chan
 		if ent.IsNotFound(err) {
 			// Check if fallback to legacy channel selection is allowed
 			settings := s.SystemService.ModelSettingsOrDefault(ctx)
-			if settings.FallbackToChannelsOnModelNotFound {
+			if settings.FallbackToChannelsOnModelNotFound && !s.modelStickyBlocksDisabledFallback(ctx, req) {
 				return s.selectChannelCadidates(ctx, req)
 			}
 
@@ -184,13 +185,6 @@ func (s *DefaultSelector) selectModelCandidates(ctx context.Context, req *llm.Re
 			log.Int("effective_association_count", len(associations)),
 		)
 	}
-	if len(associations) == 0 {
-		if log.DebugEnabled(ctx) {
-			log.Debug(ctx, "model has no associations", log.String("model", req.Model))
-		}
-
-		return []*ChannelModelsCandidate{}, nil
-	}
 
 	if log.DebugEnabled(ctx) {
 		log.Debug(ctx, "model associations found",
@@ -205,6 +199,7 @@ func (s *DefaultSelector) selectModelCandidates(ctx context.Context, req *llm.Re
 		return nil, fmt.Errorf("failed to resolve associations: %w", err)
 	}
 
+	resolution := newModelStickyResolution(ctx, model, systemSettings, resolvedCandidates)
 	candidates := filterResolvedCandidatesForRequest(ctx, req, resolvedCandidates)
 	if len(candidates) == 0 {
 		if log.DebugEnabled(ctx) {
@@ -216,16 +211,7 @@ func (s *DefaultSelector) selectModelCandidates(ctx context.Context, req *llm.Re
 		return []*ChannelModelsCandidate{}, nil
 	}
 
-	strategy := objects.RoutingPolicyDefault
-	traceStickyMode := objects.RoutingPolicyDefault
-	if model.Settings != nil {
-		strategy = objects.NormalizeRoutingPolicyValue(model.Settings.LoadBalancerStrategy)
-		traceStickyMode = objects.NormalizeRoutingPolicyValue(model.Settings.TraceStickyMode)
-	}
-	modelRoutingPolicy := &ModelRoutingPolicy{
-		LoadBalancerStrategy: strategy,
-		TraceStickyMode:      traceStickyMode,
-	}
+	modelRoutingPolicy := resolution.policy
 	defaultMaxTokens := modelCardOutputLimit(model)
 	for _, candidate := range candidates {
 		candidate.ModelRoutingPolicy = modelRoutingPolicy
@@ -743,12 +729,7 @@ func (s *LoadBalancedSelector) Select(ctx context.Context, req *llm.Request) ([]
 	loadBalancer := s.loadBalancer
 	traceStickyMode := retryPolicy.TraceStickyMode
 	if s.effectiveRoutingPolicy != nil {
-		var modelRoutingPolicy *ModelRoutingPolicy
-		if len(candidates) > 0 && candidates[0] != nil {
-			modelRoutingPolicy = candidates[0].ModelRoutingPolicy
-		}
-
-		resolvedPolicy := deriveRoutingPolicy(retryPolicy, s.apiKey, modelRoutingPolicy)
+		resolvedPolicy := deriveRequestRoutingPolicy(ctx, retryPolicy, s.apiKey, candidates)
 		if resolvedPolicy.LoadBalancerStrategy == biz.LoadBalancerStrategyModelSticky {
 			*s.effectiveRoutingPolicy = resolvedPolicy
 			if s.quotaGate != nil {

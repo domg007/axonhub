@@ -65,8 +65,9 @@ func stickyTestState(n int) *PersistenceState {
 	s := &PersistenceState{modelStickyConfig: biz.ModelStickyRuntime.ConfigSnapshot(context.Background()), APIKey: &ent.APIKey{ID: 1, Name: "test-key"}, OriginalModel: "A", RoutingPolicy: EffectiveRoutingPolicy{LoadBalancerStrategy: biz.LoadBalancerStrategyModelSticky}}
 	for id := 1; id <= n; id++ {
 		s.ChannelModelsCandidates = append(s.ChannelModelsCandidates, &ChannelModelsCandidate{
-			Channel:   &biz.Channel{Channel: &ent.Channel{ID: id, Name: fmt.Sprint(id)}, Outbound: &stickyTestOutbound{id: id}},
-			APIFormat: string(llm.APIFormatOpenAIChatCompletion), Models: []biz.ChannelModelEntry{{RequestModel: "A", ActualModel: "actual-A"}}})
+			ModelRoutingPolicy: &ModelRoutingPolicy{},
+			Channel:            &biz.Channel{Channel: &ent.Channel{ID: id, Name: fmt.Sprint(id)}, Outbound: &stickyTestOutbound{id: id}},
+			APIFormat:          string(llm.APIFormatOpenAIChatCompletion), Models: []biz.ChannelModelEntry{{RequestModel: "A", ActualModel: "actual-A"}}})
 	}
 	return s
 }

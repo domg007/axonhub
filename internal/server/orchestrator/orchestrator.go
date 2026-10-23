@@ -214,7 +214,7 @@ func (processor *ChatCompletionOrchestrator) Process(ctx context.Context, reques
 			biz.LoadBalancerStrategyCircuitBreaker: processor.circuitBreakerLoadBalancer,
 			biz.LoadBalancerStrategyRoundRobin:     processor.roundRobinLoadBalancer,
 		},
-		RoutingPolicy:         deriveRoutingPolicy(retryPolicy, apiKey, nil),
+		RoutingPolicy:         deriveRequestRoutingPolicy(ctx, retryPolicy, apiKey, nil),
 		ModelMapper:           processor.ModelMapper,
 		Proxy:                 processor.proxy,
 		CurrentCandidateIndex: 0,
