@@ -181,10 +181,13 @@ func TestModelStickyRecoverChoicesAlreadyHiddenByPipelineHeaders(t *testing.T) {
 	s := stickyTestState(1)
 	require.NoError(t, prepareModelSticky(context.Background(), s, &llm.Request{Model: "A"}))
 	s.Request = &ent.Request{RequestBody: []byte(`{"stream":true,"n":2}`)}
-	// Existing pipeline WithResponseHeaders intentionally retains its old behavior.
-	original := httpclient.WithResponseHeaders(&reviewMetadataStream{streams.SliceStream([]*httpclient.StreamEvent{})}, http.Header{"X-Request-Id": []string{"id"}})
-	_, visible := original.(interface{ ExpectedStreamChoices() int })
-	require.False(t, visible)
+	// Since beta12 the upstream WithResponseHeaders wrapper always exposes
+	// ExpectedStreamChoices, but reports 0 when its source never knew the count.
+	// Model-sticky must then fall back to the count in the persisted request.
+	original := httpclient.WithResponseHeaders(streams.SliceStream([]*httpclient.StreamEvent{}), http.Header{"X-Request-Id": []string{"id"}})
+	hidden, ok := original.(interface{ ExpectedStreamChoices() int })
+	require.True(t, ok)
+	require.Zero(t, hidden.ExpectedStreamChoices())
 	result := &pipeline.Result{Stream: true, EventStream: original}
 	require.NoError(t, finishModelSticky(context.Background(), s, result, nil))
 	require.Equal(t, 2, result.EventStream.(interface{ ExpectedStreamChoices() int }).ExpectedStreamChoices())

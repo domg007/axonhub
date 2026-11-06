@@ -8,7 +8,7 @@ import (
 
 // ErrEmptyResponse indicates the response contains no meaningful content.
 // This error triggers channel retry when empty response detection is enabled.
-var ErrEmptyResponse = errors.New("empty response detected")
+var ErrEmptyResponse = llm.ErrEmptyResponse
 
 // ErrStreamFirstEventTimeout indicates a streaming response did not produce the first event in time.
 var ErrStreamFirstEventTimeout = errors.New("stream first event timeout")
@@ -58,6 +58,15 @@ func hasMessageContent(msg *llm.Message) bool {
 	}
 
 	if msg.Refusal != "" {
+		return true
+	}
+
+	// An audio-only assistant message carries no text, tool call or reasoning, so
+	// without this it looks empty and triggers a retry of a response the upstream
+	// already produced and billed. Only audio that actually carries bytes or a
+	// transcript counts; a present-but-empty audio object stays empty, matching the
+	// speech guards above.
+	if msg.Audio != nil && (msg.Audio.Data != "" || msg.Audio.Transcript != "") {
 		return true
 	}
 

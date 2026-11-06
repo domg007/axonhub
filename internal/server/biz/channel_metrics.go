@@ -531,6 +531,14 @@ func (svc *ChannelService) RecordPerformance(ctx context.Context, perf *Performa
 		}
 	}
 
+	if perf.Success {
+		// Let the round_robin_success strategy count this success and move
+		// its cursor once the key has served its share of successful requests.
+		// fork: kept outside SkipAutoDisable on purpose. It only rotates keys and
+		// never disables anything, so model-sticky traffic must still count.
+		svc.onAPIKeySuccess(perf.ChannelID, perf.APIKey)
+	}
+
 	windowSize := svc.performanceWindowSeconds()
 
 	cm := svc.getOrCreateChannelMetrics(perf.ChannelID, windowSize)

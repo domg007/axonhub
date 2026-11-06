@@ -21,7 +21,9 @@ test('panel and both locales distinguish expired cooldown and temporary manual t
   assert.ok(component.includes('modelStickyCooldownActive(health.until)'));
   assert.ok(component.includes("t('system.retry.modelSticky.failureHistory')"));
   for (const locale of ['en', 'zh-CN']) {
-    const data = JSON.parse(readFileSync(new URL(`../../../locales/${locale}/system.json`, import.meta.url), 'utf8'));
+    // Fork-only keys live in fork.json since the beta12 merge, so upstream
+    // appends to system.json can never conflict with them.
+    const data = JSON.parse(readFileSync(new URL(`../../../locales/${locale}/fork.json`, import.meta.url), 'utf8'));
     assert.ok(data['system.retry.modelSticky.failureHistory']);
     assert.ok(data['system.retry.modelSticky.description']);
     assert.ok(data['system.retry.modelSticky.preferred']);

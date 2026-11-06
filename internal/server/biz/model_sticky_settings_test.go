@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/looplj/axonhub/internal/authz"
+	"github.com/looplj/axonhub/internal/contexts"
 	"github.com/looplj/axonhub/internal/ent"
 	"github.com/looplj/axonhub/internal/ent/enttest"
 	"github.com/looplj/axonhub/internal/pkg/xcache"
@@ -44,6 +45,9 @@ func TestModelStickyRealKeySavesKeepRenameButClearStrategyChange(t *testing.T) {
 	ctx := authz.WithTestBypass(ent.NewContext(context.Background(), client))
 	user, err := client.User.Create().SetEmail("sticky-save@example.test").SetPassword("test-only").SetFirstName("test").SetLastName("test").Save(ctx)
 	require.NoError(t, err)
+	// Since beta12 (upstream e5c904ef) updating a service-account key requires the
+	// acting user in the context, as every real GraphQL request already carries.
+	ctx = contexts.WithUser(ctx, user)
 	project, err := client.Project.Create().SetName("sticky-save").SetDescription("test").Save(ctx)
 	require.NoError(t, err)
 	strategy := LoadBalancerStrategyModelSticky

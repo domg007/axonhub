@@ -15,6 +15,7 @@ import (
 	"github.com/looplj/axonhub/llm/httpclient"
 	"github.com/looplj/axonhub/llm/pipeline"
 	"github.com/looplj/axonhub/llm/streams"
+	"github.com/looplj/axonhub/llm/transformer/shared"
 )
 
 type modelStickyRequest struct {
@@ -257,6 +258,15 @@ func modelStickyRetryable(ctx context.Context, state *PersistenceState, err erro
 	if isChannelQueueError(err) || isLocalRPMExhaustedError(err) {
 		return false
 	}
+	// A Responses continuation that cannot be served, whether AxonHub detects it
+	// before sending or the provider answers previous_response_not_found, is a
+	// conversation-state signal rather than a channel fault. Upstream (beta12+)
+	// returns it to the client at once and skips every health penalty
+	// (withoutResponsesRecoveryPenalty). Cooling the pinned channel down here would
+	// only push the client's full-input resend onto another channel.
+	if shared.IsResponsesRecoveryError(err) {
+		return false
+	}
 	if errors.Is(err, pipeline.ErrEmptyResponse) || errors.Is(err, pipeline.ErrEmptyStreamChunks) || errors.Is(err, pipeline.ErrEmptyAggregatedBody) || errors.Is(err, llm.ErrStreamIncomplete) ||
 		errors.Is(err, pipeline.ErrStreamFirstEventTimeout) || errors.Is(err, pipeline.ErrNonStreamResponseTimeout) {
 		return true
@@ -306,6 +316,12 @@ func (p *PersistentOutboundTransformer) nextModelStickyChannel(ctx context.Conte
 }
 
 func (p *PersistentOutboundTransformer) NextChannel(ctx context.Context) error {
+	// Upstream (beta12+) waits for the previous attempt's stream accounting before
+	// any channel switch. Keep that ahead of the model-sticky relay, which
+	// rewrites the candidate list below.
+	if lifecycleOwner := streamLifecycleFromContext(ctx); lifecycleOwner != nil {
+		lifecycleOwner.waitForAccounting()
+	}
 	if p.state.modelSticky != nil {
 		return p.nextModelStickyChannel(ctx)
 	}
@@ -326,12 +342,23 @@ func finishModelSticky(ctx context.Context, state *PersistenceState, result *pip
 		return err
 	}
 	if result != nil && result.Stream && result.EventStream != nil {
-		headers := httpclient.GetResponseHeaders(result.EventStream)
+		source := result.EventStream
+		headers := httpclient.GetResponseHeaders(source)
 		expected := ExpectedStreamChoices(state.Request)
-		if provider, ok := result.EventStream.(interface{ ExpectedStreamChoices() int }); ok {
-			expected = provider.ExpectedStreamChoices()
+		// Since beta12 upstream wrappers always expose ExpectedStreamChoices and
+		// report 0 when they do not know the count, so only a positive value
+		// overrides the count derived from the persisted request.
+		if provider, ok := source.(interface{ ExpectedStreamChoices() int }); ok {
+			if n := provider.ExpectedStreamChoices(); n > 0 {
+				expected = n
+			}
 		}
-		result.EventStream = httpclient.WithResponseHeadersAndExpectedChoices(&modelStickyStream{Stream: result.EventStream, ctx: ctx, state: state}, headers, expected)
+		// preserveDeliveryCapabilities keeps the source's delivery acknowledgement,
+		// delivery boundary and finalization reachable through this wrapper. Without
+		// it every model-sticky stream reaches Close unacknowledged and is recorded
+		// as incomplete (beta12+ stream contract).
+		sticky := &modelStickyStream{Stream: source, ctx: ctx, state: state}
+		result.EventStream = httpclient.WithResponseHeadersAndExpectedChoices(preserveDeliveryCapabilities(source, sticky), headers, expected)
 		return nil
 	}
 	s.release(result != nil && result.Response != nil, false)

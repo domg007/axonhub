@@ -407,7 +407,38 @@ input UpdateCatalogSettingsInput {
   refreshSeconds: Int
 }
 
+type CodexCompatibilitySettings {
+  enabled: Boolean!
+  channelID: Int
+}
+
+input UpdateCodexCompatibilitySettingsInput {
+  enabled: Boolean!
+  channelID: Int
+}
+
+type CodexCatalogChannel {
+  id: Int!
+  name: String!
+  status: ChannelStatus!
+}
+
+type CodexCatalogTestResult {
+  success: Boolean!
+  modelCount: Int!
+  upstreamStatus: Int
+  error: String
+}
+
+extend type Query {
+  codexCompatibilitySettings: CodexCompatibilitySettings!
+  codexCompatibilityEnabled: Boolean!
+  codexCatalogChannels: [CodexCatalogChannel!]!
+}
+
 extend type Mutation {
+  updateCodexCompatibilitySettings(input: UpdateCodexCompatibilitySettingsInput!): Boolean!
+  testCodexCatalog(channelID: Int!): CodexCatalogTestResult!
   updateBrandSettings(input: UpdateBrandSettingsInput!): Boolean!
   updateStoragePolicy(input: UpdateStoragePolicyInput!): Boolean!
   updateRetryPolicy(input: UpdateRetryPolicyInput!): Boolean!
@@ -507,4 +538,38 @@ extend type Query {
 
 extend type Mutation {
   clearCache(input: ClearCacheInput!): ClearCachePayload!
+}
+
+type ClaudeCodeSafeguardsConfig {
+  classifierModel: String!
+  policy: String!
+  fallbackModels: [String!]!
+  escalateOnDenial: Boolean!
+  attemptTimeoutSeconds: Float!
+  timeoutSeconds: Float!
+  maxTokens: Int!
+  transcriptCharBudget: Int!
+}
+
+input UpdateClaudeCodeSafeguardsInput {
+  classifierModel: String!
+  policy: String!
+  fallbackModels: [String!]!
+  escalateOnDenial: Boolean!
+  attemptTimeoutSeconds: Float!
+  timeoutSeconds: Float!
+  maxTokens: Int!
+  transcriptCharBudget: Int!
+}
+type ClaudeCodeSafeguardsSettings {
+  config: ClaudeCodeSafeguardsConfig!
+  usingServerDefaults: Boolean!
+  defaultPolicy: String!
+}
+extend type Query {
+  claudeCodeSafeguardsSettings: ClaudeCodeSafeguardsSettings!
+}
+extend type Mutation {
+  updateClaudeCodeSafeguardsSettings(input: UpdateClaudeCodeSafeguardsInput!): Boolean!
+  resetClaudeCodeSafeguardsSettings: Boolean!
 }
