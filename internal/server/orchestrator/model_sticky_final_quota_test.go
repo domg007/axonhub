@@ -21,11 +21,11 @@ func TestModelStickyFinalBackpressureMustRecognizeExistingModelPin(t *testing.T)
 	candidates := state.ChannelModelsCandidates
 	state.ChannelModelsCandidates = nil
 	state.CandidateSelector = &mockSelector{candidates: candidates}
-	state.RetryPolicyProvider = stickyRevisionPolicy{biz.LoadBalancerStrategyModelSticky}
+	state.Settings = stickySettings(biz.LoadBalancerStrategyModelSticky)
+	state.Settings.QuotaRouting = biz.QuotaRoutingSettings{DefaultMode: objects.QuotaRoutingModeBackpressure}
 	state.LoadBalancers = map[string]*LoadBalancer{biz.LoadBalancerStrategyAdaptive: nil}
 	provider := &mockQuotaStatusProvider{statuses: map[int]*biz.QuotaChannelStatus{1: quotaStickyOnlyStatus()}}
-	settings := &mockQuotaRoutingSettingsProvider{settings: biz.QuotaRoutingSettings{DefaultMode: objects.QuotaRoutingModeBackpressure}}
-	_, err := selectCandidates(&PersistentInboundTransformer{state: state}, provider, settings).OnInboundLlmRequest(ctx, &llm.Request{Model: "A"})
+	_, err := selectCandidates(&PersistentInboundTransformer{state: state}, provider).OnInboundLlmRequest(ctx, &llm.Request{Model: "A"})
 	require.NoError(t, err, "backpressure is not exhausted: existing model pin must remain eligible")
 	defer state.modelSticky.release(false, false)
 	require.Equal(t, 1, state.ChannelModelsCandidates[0].Channel.ID)

@@ -13,7 +13,7 @@ import (
 // preferences. Legacy strategies still use the original decorators unchanged.
 type modelStickyCompatibilitySelector struct {
 	wrapped CandidateSelector
-	policy  RetryPolicyProvider
+	state   *PersistenceState
 	key     *ent.APIKey
 }
 
@@ -28,7 +28,8 @@ func (s *modelStickyCompatibilitySelector) Select(ctx context.Context, req *llm.
 	if err != nil {
 		return nil, err
 	}
-	sticky := s.policy != nil && deriveRequestRoutingPolicy(ctx, s.policy.RetryPolicyOrDefault(ctx), s.key, candidates).LoadBalancerStrategy == biz.LoadBalancerStrategyModelSticky
+	policy := modelStickyRetryPolicy(s.state)
+	sticky := policy != nil && deriveRequestRoutingPolicy(ctx, policy, s.key, candidates).LoadBalancerStrategy == biz.LoadBalancerStrategyModelSticky
 	var selector CandidateSelector = modelStickyResolvedCandidates{candidates}
 	// Native server tools are not ordinary client function tools. Preserve their
 	// established capability preference instead of inventing unsupported services.

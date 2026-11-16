@@ -1,9 +1,16 @@
+// 职责: 展示渠道额度窗口、路由状态及可用的手动重置操作。
+// 关联文件:
+//   frontend/src/features/system/data/quotas.ts
+//   frontend/src/components/claude-reset-credits.tsx
+//   frontend/src/locales/en.json
+//   frontend/src/locales/zh.json
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { format } from 'date-fns';
 import { useQueryClient } from '@tanstack/react-query';
 import { Loader2, RefreshCw, Zap, Battery, BatteryLow, BatteryMedium, BatteryFull, BatteryWarning, ArrowUpDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
+import { ClaudeResetCredits } from '@/components/claude-reset-credits';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -28,6 +35,8 @@ import {
   ProviderNeuralWattQuotaData,
   ProviderApertisQuotaData,
   ProviderCharmHyperQuotaData,
+  formatQuotaBalance,
+  parseQuotaBalances,
   ProviderKimiCodeQuotaData,
   ProviderMinimaxQuotaData,
   ProviderZhipuQuotaData,
@@ -61,6 +70,20 @@ const STATUS_LABELS = {
   exhausted: 'quota.status.exhausted',
   unknown: 'quota.status.unknown',
 } as const;
+
+// Codex reset credits expire (typically 30 days after they are granted). Show
+// the redeem action shortly before the earliest credit lapses even while the
+// channel still has quota left, otherwise the credit is wasted.
+const RESET_CREDIT_EXPIRING_SOON_MS = 72 * 60 * 60 * 1000;
+
+function isResetCreditExpiringSoon(expiresAt?: string, now = Date.now()): boolean {
+  if (!expiresAt) return false;
+  const expiresAtMs = new Date(expiresAt).getTime();
+  if (Number.isNaN(expiresAtMs)) return false;
+  // A credit that already lapsed is stale cached quota data, not a redemption
+  // reminder: only a credit that is still valid can be "expiring soon".
+  return expiresAtMs > now && expiresAtMs - now <= RESET_CREDIT_EXPIRING_SOON_MS;
+}
 
 // Effective routing mode for a channel: its own mode wins unless it defers
 // via INHERIT to the global default. Null when the global default is
@@ -188,6 +211,8 @@ function getClineUsagePercent(window?: ClineQuotaWindow): number {
   return window?.usage_percent ?? (window?.usage_ratio ?? 0) * 100;
 }
 
+// getChannelPercentage maps provider quota data onto the 0-100 used percentage
+// shown by the quota badge.
 function getChannelPercentage(channel: ProviderQuotaChannel): number {
   let percentage = 0;
   if (channel.type === 'claudecode') {
@@ -473,6 +498,16 @@ function PeriodQuotaEstimate({ limits, currency }: { limits: ProviderQuotaLimit[
   );
 }
 
+// Cached quota data can outlive the reset credit it describes: a credit that
+// lapsed after the last quota poll is no longer redeemable. Excluding those
+// keeps the "expires at" row from advertising a date in the past.
+function isResetCreditUnexpired(reset: { expiresAt?: string }, now = Date.now()): boolean {
+  if (!reset.expiresAt) return false;
+  const expiresAtMs = new Date(reset.expiresAt).getTime();
+  return !Number.isNaN(expiresAtMs) && expiresAtMs > now;
+}
+
+// QuotaRow renders one channel's quota details in the provider quota popover.
 function QuotaRow({ channel, effectiveMode }: { channel: ProviderQuotaChannel; effectiveMode: QuotaRoutingMode | null }) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
@@ -614,6 +649,23 @@ function QuotaRow({ channel, effectiveMode }: { channel: ProviderQuotaChannel; e
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? value : format(date, 'yyyy-MM-dd HH:mm');
   };
+
+  // Compact remaining time for an expiring reset credit, e.g. "2d 3h". The
+  // quota unit labels keep the hint localized without a second formatter key.
+  const formatResetCreditRemaining = (expiresAt?: string) => {
+    if (!expiresAt) return '';
+    const diffMs = new Date(expiresAt).getTime() - Date.now();
+    if (Number.isNaN(diffMs)) return '';
+    // Callers only pass credits that are still valid, but one less than a
+    // minute from expiry must not read as "0m".
+    const totalMinutes = Math.max(1, Math.floor(diffMs / 60000));
+    const days = Math.floor(totalMinutes / (24 * 60));
+    const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+    const minutes = totalMinutes % 60;
+    if (days > 0) return `${days}${t('quota.label.d')} ${hours}${t('quota.label.h')}`;
+    if (hours > 0) return `${hours}${t('quota.label.h')} ${minutes}${t('quota.label.m')}`;
+    return `${minutes}${t('quota.label.m')}`;
+  };
   return (
     <div className='min-w-0 space-y-3 border-b py-3 first:pt-1 last:border-0 last:pb-1'>
       <div className='flex items-center justify-between'>
@@ -652,7 +704,7 @@ function QuotaRow({ channel, effectiveMode }: { channel: ProviderQuotaChannel; e
                     <div className='space-y-1'>
                       <div className='flex items-center justify-between text-xs'>
                         <span className='text-muted-foreground font-medium'>{t('quota.window.5h')}</span>
-                        <span className='text-foreground font-medium'>{Math.round((qd.windows['5h'].utilization || 0) * 100)}%</span>
+                        <span className='text-foreground font-medium'>{t('quota.label.percent_used', { percent: Math.round((qd.windows['5h'].utilization || 0) * 100) })}</span>
                       </div>
                       <UsageTimeBar
                         usagePercent={(qd.windows['5h'].utilization || 0) * 100}
@@ -682,7 +734,7 @@ function QuotaRow({ channel, effectiveMode }: { channel: ProviderQuotaChannel; e
                     <div className='space-y-1'>
                       <div className='flex items-center justify-between text-xs'>
                         <span className='text-muted-foreground font-medium'>{t('quota.window.7d')}</span>
-                        <span className='text-foreground font-medium'>{Math.round((qd.windows['7d'].utilization || 0) * 100)}%</span>
+                        <span className='text-foreground font-medium'>{t('quota.label.percent_used', { percent: Math.round((qd.windows['7d'].utilization || 0) * 100) })}</span>
                       </div>
                       <UsageTimeBar
                         usagePercent={(qd.windows['7d'].utilization || 0) * 100}
@@ -708,12 +760,47 @@ function QuotaRow({ channel, effectiveMode }: { channel: ProviderQuotaChannel; e
                     </div>
                   </div>
                 )}
+                {qd.model_windows?.map((modelWindow) => {
+                  const label = t('quota.claude.modelWeekly', { model: modelWindow.model });
+                  const usedPercent = (modelWindow.utilization || 0) * 100;
+                  const durationPercent = getClaudeDurationPercent('7d', modelWindow.reset);
+                  return (
+                    <div key={modelWindow.model} className='border-border/60 space-y-2.5 border-t border-dashed pt-3'>
+                      <div className='space-y-1'>
+                        <div className='flex items-center justify-between text-xs'>
+                          <span className='text-muted-foreground font-medium'>{label}</span>
+                          <span className='text-foreground font-medium'>{t('quota.label.percent_used', { percent: Math.round(usedPercent) })}</span>
+                        </div>
+                        <UsageTimeBar
+                          usagePercent={usedPercent}
+                          durationPercent={durationPercent}
+                          tooltip={
+                            <div className='space-y-0.5'>
+                              <div className='font-medium'>{label}</div>
+                              <div>{t('quota.label.percent_used', { percent: Math.round(usedPercent) })}</div>
+                              {durationPercent !== undefined && (
+                                <div>
+                                  {t('quota.label.time_elapsed')}: {Math.round(durationPercent)}%
+                                </div>
+                              )}
+                              {modelWindow.reset && (
+                                <div>
+                                  {formatTimeToReset(new Date(modelWindow.reset * 1000).toISOString())} ({formatDate(modelWindow.reset)})
+                                </div>
+                              )}
+                            </div>
+                          }
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
                 {qd.windows?.['overage'] && (
                   <div className='border-border/60 space-y-2.5 border-t border-dashed pt-3'>
                     <div className='space-y-1'>
                       <div className='flex items-center justify-between text-xs'>
                         <span className='text-muted-foreground font-medium'>{t('quota.label.overage_window')}</span>
-                        <span className='text-foreground font-medium'>{Math.round((qd.windows['overage'].utilization || 0) * 100)}%</span>
+                        <span className='text-foreground font-medium'>{t('quota.label.percent_used', { percent: Math.round((qd.windows['overage'].utilization || 0) * 100) })}</span>
                       </div>
                       <UsageTimeBar
                         usagePercent={(qd.windows['overage'].utilization || 0) * 100}
@@ -729,6 +816,8 @@ function QuotaRow({ channel, effectiveMode }: { channel: ProviderQuotaChannel; e
                     </div>
                   </div>
                 )}
+
+                <ClaudeResetCredits channelID={channel.id} resets={qd._resets} />
 
                 {(quota.nextResetAt || qd.representative_claim) && (
                   <div className='text-muted-foreground flex items-center justify-between pt-1 text-[11px]'>
@@ -881,12 +970,17 @@ function QuotaRow({ channel, effectiveMode }: { channel: ProviderQuotaChannel; e
             const availableResets = qd._resets?.resets ?? [];
             const availableResetCount = availableResets.length;
             const nextExpiringReset = availableResets
-              .filter((reset) => reset.expiresAt && !Number.isNaN(new Date(reset.expiresAt).getTime()))
+              .filter((reset) => isResetCreditUnexpired(reset))
               .sort((a, b) => new Date(a.expiresAt!).getTime() - new Date(b.expiresAt!).getTime())[0];
             const latestGrantedReset = availableResets
               .filter((reset) => reset.grantedAt && !Number.isNaN(new Date(reset.grantedAt).getTime()))
               .sort((a, b) => new Date(b.grantedAt!).getTime() - new Date(a.grantedAt!).getTime())[0];
             const resetTime = nextExpiringReset?.expiresAt ?? latestGrantedReset?.grantedAt;
+            const expiringSoonReset =
+              nextExpiringReset && isResetCreditExpiringSoon(nextExpiringReset.expiresAt) ? nextExpiringReset : undefined;
+            const resetCreditExpiryHint = expiringSoonReset?.expiresAt
+              ? t('quota.codex.resetCreditExpiringSoon', { time: formatResetCreditRemaining(expiringSoonReset.expiresAt) })
+              : undefined;
             const hasResetInfo = qd._resets?.supported === true && !qd._resets.error;
             const canAttemptReset = qd._resets?.supported === true && (Boolean(qd._resets.error) || availableResetCount > 0);
             return (
@@ -947,14 +1041,19 @@ function QuotaRow({ channel, effectiveMode }: { channel: ProviderQuotaChannel; e
                       <span className='text-foreground font-medium'>{formatQuotaResetTime(resetTime)}</span>
                     </div>
                   )}
-                  {(status === 'exhausted' || status === 'warning') && (
-                    <div className='flex items-center justify-end pt-1'>
+                  {(status === 'exhausted' || status === 'warning' || Boolean(expiringSoonReset)) && (
+                    <div className='flex flex-col items-end gap-1 pt-1'>
+                      {resetCreditExpiryHint && (
+                        <p className='text-xs font-medium text-amber-600 dark:text-amber-400' role='status'>
+                          {resetCreditExpiryHint}
+                        </p>
+                      )}
                       <Button
                         size='sm'
                         variant='outline'
                         className='h-7 text-xs'
                         disabled={isResetting || !canAttemptReset}
-                        title={!canAttemptReset ? t('quota.codex.noResetCredits') : undefined}
+                        title={!canAttemptReset ? t('quota.codex.noResetCredits') : resetCreditExpiryHint}
                         onClick={handleResetCodexQuota}
                       >
                         {isResetting ? <Loader2 className='mr-1.5 h-3.5 w-3.5 animate-spin' /> : <Zap className='mr-1.5 h-3.5 w-3.5' />}
@@ -2371,6 +2470,54 @@ function QuotaRow({ channel, effectiveMode }: { channel: ProviderQuotaChannel; e
                 </div>
               </div>
             );
+          })()}
+        </div>
+      )}
+
+      {(channel.type === 'deepseek' ||
+        channel.type === 'deepseek_anthropic' ||
+        (isOpenaiType(channel.type) && channel.providerType === 'deepseek')) && (
+        <div className='mt-3 space-y-3'>
+          {(() => {
+            const balances = parseQuotaBalances(channel.quotaStatus.quotaData);
+            if (balances.length === 0) return null;
+
+            return balances.map((balance, index) => {
+              const currency = balance.currency?.trim().toUpperCase();
+              const total = formatQuotaBalance(balance.total);
+              const granted = formatQuotaBalance(balance.granted);
+              const toppedUp = formatQuotaBalance(balance.topped_up);
+
+              return (
+                <div
+                  key={`${balance.account ?? ''}-${currency ?? 'balance'}-${index}`}
+                  className={index > 0 ? 'border-border/60 space-y-1 border-t border-dashed pt-3' : 'space-y-1'}
+                >
+                  <div className='flex items-center justify-between text-xs'>
+                    <span className='text-muted-foreground font-medium'>
+                      {t('quota.label.account_balance')}
+                      {currency ? ` (${currency})` : ''}
+                      {balance.account ? ` · ${balance.account}` : ''}
+                    </span>
+                    <span className='text-foreground font-medium'>
+                      {total !== undefined ? (currency ? `${currency} ${total}` : total) : t('quota.label.unavailable')}
+                    </span>
+                  </div>
+                  {granted !== undefined && (
+                    <div className='flex items-center justify-between text-[11px]'>
+                      <span className='text-muted-foreground font-medium'>{t('quota.label.granted_balance')}</span>
+                      <span className='text-foreground font-medium'>{granted}</span>
+                    </div>
+                  )}
+                  {toppedUp !== undefined && (
+                    <div className='flex items-center justify-between text-[11px]'>
+                      <span className='text-muted-foreground font-medium'>{t('quota.label.topped_up_balance')}</span>
+                      <span className='text-foreground font-medium'>{toppedUp}</span>
+                    </div>
+                  )}
+                </div>
+              );
+            });
           })()}
         </div>
       )}

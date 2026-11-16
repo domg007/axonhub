@@ -107,8 +107,7 @@ func prepareModelSticky(ctx context.Context, state *PersistenceState, req *llm.R
 	}
 	session := &modelStickyRequest{key: biz.ModelStickyKey{APIKeyID: state.APIKey.ID, Model: req.Model}, keyName: state.APIKey.Name,
 		candidates: state.ChannelModelsCandidates, tried: make(map[int]bool), waitTimeout: 30 * time.Second}
-	if state.RetryPolicyProvider != nil {
-		policy := state.RetryPolicyProvider.RetryPolicyOrDefault(ctx)
+	if policy := modelStickyRetryPolicy(state); policy != nil {
 		seconds := policy.NonStreamResponseTimeoutSeconds
 		if req.Stream != nil && *req.Stream {
 			seconds = policy.StreamFirstEventTimeoutSeconds
@@ -137,8 +136,8 @@ func prepareModelSticky(ctx context.Context, state *PersistenceState, req *llm.R
 		state.modelStickyConfig = biz.ModelStickyRuntime.ConfigSnapshot(ctx)
 	}
 	systemStrategy := ""
-	if state.RetryPolicyProvider != nil {
-		systemStrategy = state.RetryPolicyProvider.RetryPolicyOrDefault(ctx).LoadBalancerStrategy
+	if policy := modelStickyRetryPolicy(state); policy != nil {
+		systemStrategy = policy.LoadBalancerStrategy
 	}
 	session.admission = biz.NewModelStickyAdmission(state.modelStickyConfig, state.APIKey, inherited, systemStrategy)
 	session.admission.QuotaExcludedChannelID = state.RoutingPolicy.modelStickyQuotaExcluded
@@ -255,7 +254,7 @@ func modelStickyRetryable(ctx context.Context, state *PersistenceState, err erro
 	if err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled) {
 		return false
 	}
-	if isChannelQueueError(err) || isLocalRPMExhaustedError(err) {
+	if isLocalAdmissionError(err) {
 		return false
 	}
 	// A Responses continuation that cannot be served, whether AxonHub detects it
@@ -316,11 +315,11 @@ func (p *PersistentOutboundTransformer) nextModelStickyChannel(ctx context.Conte
 }
 
 func (p *PersistentOutboundTransformer) NextChannel(ctx context.Context) error {
-	// Upstream (beta12+) waits for the previous attempt's stream accounting before
-	// any channel switch. Keep that ahead of the model-sticky relay, which
+	// Upstream (rc1+) closes the previous attempt (finalizing its accounting)
+	// before any channel switch. Keep that ahead of the model-sticky relay, which
 	// rewrites the candidate list below.
 	if lifecycleOwner := streamLifecycleFromContext(ctx); lifecycleOwner != nil {
-		lifecycleOwner.waitForAccounting()
+		lifecycleOwner.closeAttempt()
 	}
 	if p.state.modelSticky != nil {
 		return p.nextModelStickyChannel(ctx)

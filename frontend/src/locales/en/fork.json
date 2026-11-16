@@ -18,5 +18,6 @@
   "system.retry.modelSticky.empty": "No runtime states yet. Enable the fixed-channel strategy and send a request first.",
   "system.retry.modelSticky.preferred": "Manual target accepted: {{channel}}. A valid response pins it; all upstream errors use configured retry budgets before relay. Cancellation or normal early close does not revoke it; target removal relays within this model.",
   "system.retry.modelSticky.resetHint": "Reset clears this key + model pin, failure round and all channel cooldowns. Switching is not a permanent lock.",
-  "system.retry.modelSticky.failureHistory": "Cooldown ended; failure history retained"
+  "system.retry.modelSticky.failureHistory": "Cooldown ended; failure history retained",
+  "channels.dialogs.systemSettings.frequency.twelveHours": "12 hours"
 }

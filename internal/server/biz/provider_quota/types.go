@@ -26,19 +26,32 @@ var ErrResetUnsupported = errors.New("provider quota reset is not supported")
 
 // Reset is a provider-agnostic quota reset that can be consumed.
 type Reset struct {
-	ID        string     `json:"id"`
-	Status    string     `json:"status"`
-	Type      string     `json:"type,omitempty"`
-	GrantedAt *time.Time `json:"grantedAt,omitempty"`
-	ExpiresAt *time.Time `json:"expiresAt,omitempty"`
-	Title     string     `json:"title,omitempty"`
+	Clears      []string `json:"clears,omitempty"`
+	Recommended bool     `json:"recommended,omitempty"`
+	Remaining   *int     `json:"remaining,omitempty"`
+	Redeemable  *bool    `json:"redeemable,omitempty"`
+	// UnavailableReason explains why Redeemable is false; empty when redeemable or unknown.
+	UnavailableReason string `json:"unavailableReason,omitempty"`
+	// UpstreamReason is the provider's own short reason code, kept for display.
+	UpstreamReason string     `json:"upstreamReason,omitempty"`
+	ID             string     `json:"id"`
+	Status         string     `json:"status"`
+	Type           string     `json:"type,omitempty"`
+	GrantedAt      *time.Time `json:"grantedAt,omitempty"`
+	ExpiresAt      *time.Time `json:"expiresAt,omitempty"`
+	Title          string     `json:"title,omitempty"`
 }
 
 // ResetList describes a provider's optional reset capability and current resets.
 type ResetList struct {
-	Supported bool    `json:"supported"`
-	Resets    []Reset `json:"resets"`
-	Error     string  `json:"error,omitempty"`
+	IneligibleReason string     `json:"ineligibleReason,omitempty"`
+	Eligible         *bool      `json:"eligible,omitempty"`
+	CooldownUntil    *time.Time `json:"cooldownUntil,omitempty"`
+	// WindowModels maps a reset window to the model whose weekly limit it clears.
+	WindowModels map[string]string `json:"windowModels,omitempty"`
+	Supported    bool              `json:"supported"`
+	Resets       []Reset           `json:"resets"`
+	Error        string            `json:"error,omitempty"`
 }
 
 // Resetter is an optional capability implemented by quota providers that can
@@ -46,6 +59,11 @@ type ResetList struct {
 type Resetter interface {
 	ListResets(ctx context.Context, channel *ent.Channel) (ResetList, error)
 	Reset(ctx context.Context, channel *ent.Channel) error
+}
+
+// SelectiveResetter can redeem a specific provider grant without changing the default reset behavior.
+type SelectiveResetter interface {
+	ResetSelected(ctx context.Context, channel *ent.Channel, resetID string) error
 }
 
 type QuotaLimitType string
@@ -115,7 +133,22 @@ type QuotaData struct {
 	NextResetAt  *time.Time         `json:"next_reset_at"` // Next quota reset timestamp
 	Ready        bool               `json:"ready"`         // True if status is available or warning
 	Limits       []QuotaLimitStatus `json:"limits"`
+	Balances     []QuotaBalance     `json:"balances,omitempty"`
 	Resets       *ResetList         `json:"resets,omitempty"`
+}
+
+// QuotaBalance is a provider-reported account amount that is not a usage
+// window, such as a prepaid credit balance. The UI renders it as money instead
+// of a percentage bar.
+type QuotaBalance struct {
+	// Account labels the credential an amount belongs to when one channel
+	// draws from several accounts (the same role as QuotaLimitStatus.Account).
+	// It is a display label and never holds a credential.
+	Account  string   `json:"account,omitempty"`
+	Currency string   `json:"currency,omitempty"`
+	Total    float64  `json:"total"`
+	Granted  *float64 `json:"granted,omitempty"`
+	ToppedUp *float64 `json:"topped_up,omitempty"`
 }
 
 // WarningThresholdRatio is the usage ratio at which a channel transitions to "warning" status.

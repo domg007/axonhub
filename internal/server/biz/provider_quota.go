@@ -76,6 +76,8 @@ var providerQuotaChannelTypes = []channel.Type{
 	channel.TypeZhipuAnthropic,
 	channel.TypeZai,
 	channel.TypeZaiAnthropic,
+	channel.TypeDeepseek,
+	channel.TypeDeepseekAnthropic,
 	channel.TypeCommandcode,
 	channel.TypeCommandcodeAnthropic,
 	channel.TypeOllama,
@@ -166,6 +168,27 @@ func cloneLimits(limits []provider_quota.QuotaLimitStatus) []provider_quota.Quot
 	clones := make([]provider_quota.QuotaLimitStatus, len(limits))
 	for i, limit := range limits {
 		clones[i] = cloneQuotaLimitStatus(limit)
+	}
+	return clones
+}
+
+// cloneBalances deep-copies balances so account-group members do not share
+// mutable optional fields.
+func cloneBalances(balances []provider_quota.QuotaBalance) []provider_quota.QuotaBalance {
+	if balances == nil {
+		return nil
+	}
+
+	clones := make([]provider_quota.QuotaBalance, len(balances))
+	for i, balance := range balances {
+		clone := balance
+		if balance.Granted != nil {
+			clone.Granted = lo.ToPtr(*balance.Granted)
+		}
+		if balance.ToppedUp != nil {
+			clone.ToppedUp = lo.ToPtr(*balance.ToppedUp)
+		}
+		clones[i] = clone
 	}
 	return clones
 }
@@ -400,6 +423,7 @@ func (svc *ProviderQuotaService) registerProviderQuotaSupport() {
 	svc.registerMinimaxSupport()
 	svc.registerZhipuSupport()
 	svc.registerZaiSupport()
+	svc.registerDeepSeekSupport()
 	svc.registerCharmHyperSupport()
 	svc.registerCommandCodeSupport()
 	svc.registerOllamaSupport()
@@ -489,6 +513,10 @@ func (svc *ProviderQuotaService) registerZaiSupport() {
 
 func (svc *ProviderQuotaService) registerCharmHyperSupport() {
 	svc.checkers["charm_hyper"] = provider_quota.NewCharmHyperQuotaChecker(svc.httpClient)
+}
+
+func (svc *ProviderQuotaService) registerDeepSeekSupport() {
+	svc.checkers["deepseek"] = provider_quota.NewDeepSeekQuotaChecker(svc.httpClient)
 }
 
 func (svc *ProviderQuotaService) intervalToCronExpr(interval time.Duration) string {
@@ -680,7 +708,7 @@ func (svc *ProviderQuotaService) ListResets(ctx context.Context, channelID int) 
 }
 
 // ResetChannelQuotaNow attempts to redeem a provider-managed reset for a channel.
-func (svc *ProviderQuotaService) ResetChannelQuotaNow(ctx context.Context, channelID int) error {
+func (svc *ProviderQuotaService) ResetChannelQuotaNow(ctx context.Context, channelID int, resetIDs ...string) error {
 	// The quota edge gives saveQuotaStatus the pre-reset previous status for
 	// webhook transition detection without an extra query.
 	ch, err := svc.db.Channel.Query().Where(channel.IDEQ(channelID)).WithProviderQuotaStatus().Only(ctx)
@@ -709,8 +737,18 @@ func (svc *ProviderQuotaService) ResetChannelQuotaNow(ctx context.Context, chann
 		return fmt.Errorf("channel has no credentials")
 	}
 
-	if err := resetter.Reset(ctx, ch); err != nil {
-		return fmt.Errorf("failed to reset %s quota: %w", providerType, err)
+	var resetErr error
+	if len(resetIDs) > 0 && resetIDs[0] != "" {
+		selective, ok := checker.(provider_quota.SelectiveResetter)
+		if !ok {
+			return fmt.Errorf("%w: selecting a reset for provider %q", provider_quota.ErrResetUnsupported, providerType)
+		}
+		resetErr = selective.ResetSelected(ctx, ch, resetIDs[0])
+	} else {
+		resetErr = resetter.Reset(ctx, ch)
+	}
+	if resetErr != nil {
+		return fmt.Errorf("failed to reset %s quota: %w", providerType, resetErr)
 	}
 
 	// Refresh the quota status immediately so the UI reflects the reset.
@@ -883,7 +921,9 @@ func (svc *ProviderQuotaService) checkChannelQuota(ctx context.Context, group qu
 	quotaData = provider_quota.NormalizeQuotaData(quotaData)
 
 	resetList := provider_quota.ResetList{Supported: false}
-	if resetter, ok := checker.(provider_quota.Resetter); ok {
+	if quotaData.Resets != nil {
+		resetList = *quotaData.Resets
+	} else if resetter, ok := checker.(provider_quota.Resetter); ok {
 		resetList.Supported = true
 		resetList, err = resetter.ListResets(ctx, ch)
 		resetList.Supported = true
@@ -900,6 +940,7 @@ func (svc *ProviderQuotaService) checkChannelQuota(ctx context.Context, group qu
 	for _, member := range group.channels {
 		memberQuotaData := quotaData
 		memberQuotaData.Limits = cloneLimits(quotaData.Limits)
+		memberQuotaData.Balances = cloneBalances(quotaData.Balances)
 		// saveQuotaStatus may write _previous_status into RawData, which is a
 		// shared map across the account group; clone it so each member's
 		// persisted row carries only its own carried status.
@@ -1340,6 +1381,8 @@ func (svc *ProviderQuotaService) saveQuotaError(
 	svc.updateQuotaCache(ch.ID, providerType, providerquotastatus.StatusUnknown, false, "", nil)
 }
 
+// getProviderType maps a channel to the provider quota key used by the checker
+// registry and collection settings.
 func (svc *ProviderQuotaService) getProviderType(ch *ent.Channel) string {
 	switch ch.Type { //nolint:exhaustive
 	case channel.TypeClaudecode:
@@ -1370,6 +1413,8 @@ func (svc *ProviderQuotaService) getProviderType(ch *ent.Channel) string {
 		return "zhipu"
 	case channel.TypeZai, channel.TypeZaiAnthropic:
 		return "zai"
+	case channel.TypeDeepseek, channel.TypeDeepseekAnthropic:
+		return "deepseek"
 	case channel.TypeCommandcode, channel.TypeCommandcodeAnthropic:
 		return "commandcode"
 	case channel.TypeOllama, channel.TypeOllamaAnthropic:
@@ -1425,6 +1470,8 @@ func hasCredentialsForProvider(ch *ent.Channel) bool {
 		strings.TrimSpace(ch.Credentials.APIKey) != "" || len(ch.Credentials.APIKeys) > 0
 }
 
+// mergeLimitsIntoQuotaData merges normalized limits, balances and resets into
+// the provider-specific payload persisted on the channel quota status.
 func (svc *ProviderQuotaService) mergeLimitsIntoQuotaData(quotaData provider_quota.QuotaData) map[string]any {
 	data := lo.Assign(map[string]any{}, quotaData.RawData)
 	if quotaData.Resets != nil {
@@ -1464,6 +1511,29 @@ func (svc *ProviderQuotaService) mergeLimitsIntoQuotaData(quotaData provider_quo
 			limitMaps = append(limitMaps, m)
 		}
 		data["_limits"] = limitMaps
+	}
+
+	if len(quotaData.Balances) > 0 {
+		balanceMaps := make([]map[string]any, 0, len(quotaData.Balances))
+		for _, b := range quotaData.Balances {
+			m := map[string]any{
+				"total": b.Total,
+			}
+			if b.Currency != "" {
+				m["currency"] = b.Currency
+			}
+			if b.Account != "" {
+				m["account"] = b.Account
+			}
+			if b.Granted != nil {
+				m["granted"] = *b.Granted
+			}
+			if b.ToppedUp != nil {
+				m["topped_up"] = *b.ToppedUp
+			}
+			balanceMaps = append(balanceMaps, m)
+		}
+		data["_balances"] = balanceMaps
 	}
 
 	return data

@@ -29,18 +29,18 @@ func TestModelStickyFinalQuotaColdManualExhaustedAndConcurrentControl(t *testing
 			candidates := state.ChannelModelsCandidates
 			state.ChannelModelsCandidates = nil
 			state.CandidateSelector = &mockSelector{candidates: candidates}
-			state.RetryPolicyProvider = stickyRevisionPolicy{biz.LoadBalancerStrategyModelSticky}
+			state.Settings = stickySettings(biz.LoadBalancerStrategyModelSticky)
+			state.Settings.QuotaRouting = biz.QuotaRoutingSettings{DefaultMode: objects.QuotaRoutingModeBackpressure}
 			state.LoadBalancers = map[string]*LoadBalancer{biz.LoadBalancerStrategyAdaptive: nil}
 			status := quotaStickyOnlyStatus()
 			if mode == "exhausted" || mode == "concurrent-control" {
 				status = quotaExhaustedStatus()
 			}
 			provider := &mockQuotaStatusProvider{statuses: map[int]*biz.QuotaChannelStatus{1: status}}
-			settings := &mockQuotaRoutingSettingsProvider{settings: biz.QuotaRoutingSettings{DefaultMode: objects.QuotaRoutingModeBackpressure}}
 			if mode == "concurrent-control" {
 				require.NoError(t, biz.ModelStickyRuntime.Control(biz.ModelStickyKey{APIKeyID: 1, Model: "A"}, 2))
 			}
-			_, err := selectCandidates(&PersistentInboundTransformer{state: state}, provider, settings).OnInboundLlmRequest(context.Background(), &llm.Request{Model: "A"})
+			_, err := selectCandidates(&PersistentInboundTransformer{state: state}, provider).OnInboundLlmRequest(context.Background(), &llm.Request{Model: "A"})
 			switch mode {
 			case "manual":
 				require.NoError(t, err, "quota-blocked manual target relays without existing-session privilege")

@@ -63,11 +63,12 @@ func TestRequestService_UpdateRequestCompletedWithAudio_ExternalStorage(t *testi
 
 	err = requestService.UpdateRequestCompletedWithAudio(
 		ctx,
-		reqRow.ID,
+		reqRow,
 		"resp-audio",
 		placeholder,
 		audio,
 		"audio.mp3",
+		nil,
 		nil,
 	)
 	require.NoError(t, err)

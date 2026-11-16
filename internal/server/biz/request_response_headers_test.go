@@ -34,8 +34,10 @@ func TestUpdateResponseHeadersMasksSensitiveValues(t *testing.T) {
 		"X-Request-ID":  {"request-id"},
 	}
 
-	require.NoError(t, svc.UpdateRequestResponseHeaders(ctx, req.ID, headers))
-	require.NoError(t, svc.UpdateRequestExecutionResponseHeaders(ctx, execution.ID, headers))
+	require.NoError(t, svc.UpdateRequestFinalized(ctx, req, request.StatusCompleted, "external-id", nil, nil, headers))
+	require.NoError(t, svc.UpdateRequestExecutionFinalized(
+		ctx, execution, requestexecution.StatusCompleted, "", "", nil, nil, "", headers,
+	))
 
 	req = client.Request.GetX(ctx, req.ID)
 	require.JSONEq(t, `{"Content-Type":["application/json"],"Authorization":["******"],"X-Request-ID":["request-id"]}`, string(req.ResponseHeaders))

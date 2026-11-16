@@ -17,13 +17,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type stickyRevisionPolicy struct{ strategy string }
-
-func (p stickyRevisionPolicy) RetryPolicyOrDefault(context.Context) *biz.RetryPolicy {
-	return &biz.RetryPolicy{LoadBalancerStrategy: p.strategy}
-}
-func (p stickyRevisionPolicy) QuotaRoutingSettingsOrDefault(context.Context) biz.QuotaRoutingSettings {
-	return biz.QuotaRoutingSettings{}
+// stickySettings builds the per-request settings snapshot (upstream rc1+) that
+// model-sticky reads its system strategy from.
+func stickySettings(strategy string) *RequestSettings {
+	return &RequestSettings{RetryPolicy: biz.RetryPolicy{LoadBalancerStrategy: strategy}}
 }
 
 func TestModelStickyCompatibilityOnlyChangesNewStrategy(t *testing.T) {
@@ -31,7 +28,7 @@ func TestModelStickyCompatibilityOnlyChangesNewStrategy(t *testing.T) {
 		t.Run(strategy, func(t *testing.T) {
 			state := stickyTestState(2)
 			state.ChannelModelsCandidates[0].Channel.Policies.Stream = objects.CapabilityPolicyRequire
-			selector := &modelStickyCompatibilitySelector{wrapped: &mockSelector{candidates: state.ChannelModelsCandidates}, policy: stickyRevisionPolicy{strategy}, key: state.APIKey}
+			selector := &modelStickyCompatibilitySelector{wrapped: &mockSelector{candidates: state.ChannelModelsCandidates}, state: &PersistenceState{Settings: stickySettings(strategy)}, key: state.APIKey}
 			got, err := selector.Select(context.Background(), &llm.Request{Model: "A", APIFormat: llm.APIFormatOpenAIChatCompletion})
 			require.NoError(t, err)
 			if strategy == biz.LoadBalancerStrategyModelSticky {
@@ -59,11 +56,10 @@ func TestModelStickyRealSelectionKeepsConvertibleTitleOnPinnedChannel(t *testing
 		cs[0].Channel.Policies.Stream = objects.CapabilityPolicyRequire
 		state.ChannelModelsCandidates = nil
 		state.CandidateSelector = &mockSelector{candidates: cs}
-		policy := stickyRevisionPolicy{biz.LoadBalancerStrategyModelSticky}
-		state.RetryPolicyProvider = policy
+		state.Settings = stickySettings(biz.LoadBalancerStrategyModelSticky)
 		state.LoadBalancers = map[string]*LoadBalancer{biz.LoadBalancerStrategyAdaptive: nil}
 		req := &llm.Request{Model: "A", Stream: &streaming, APIFormat: llm.APIFormatOpenAIChatCompletion}
-		_, err := selectCandidates(&PersistentInboundTransformer{state: state}, nil, policy).OnInboundLlmRequest(context.Background(), req)
+		_, err := selectCandidates(&PersistentInboundTransformer{state: state}, nil).OnInboundLlmRequest(context.Background(), req)
 		require.NoError(t, err)
 		require.Len(t, state.ChannelModelsCandidates, 1)
 		require.Equal(t, 1, state.ChannelModelsCandidates[0].Channel.ID)

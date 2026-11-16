@@ -18,5 +18,6 @@
   "system.retry.modelSticky.empty": "暂无运行态。请先启用固定渠道策略并发送一次请求。",
   "system.retry.modelSticky.preferred": "已接受手动目标：{{channel}}。有效响应后固定；所有上游错误按现有重试预算处理后接力。取消或正常提前关闭不会撤销，目标失效时在同一模型内接力。",
   "system.retry.modelSticky.resetHint": "重置会清除此 Key＋模型的固定、失败轮次和全部渠道冷却；手动切换不是永久锁定。",
-  "system.retry.modelSticky.failureHistory": "冷却已结束；保留失败历史"
+  "system.retry.modelSticky.failureHistory": "冷却已结束；保留失败历史",
+  "channels.dialogs.systemSettings.frequency.twelveHours": "12 小时"
 }

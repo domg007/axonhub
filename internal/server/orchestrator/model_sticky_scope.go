@@ -35,3 +35,14 @@ func deriveRequestRoutingPolicy(ctx context.Context, retry *biz.RetryPolicy, key
 	}
 	return policy
 }
+
+// modelStickyRetryPolicy reads the retry policy from the request settings
+// snapshot (upstream rc1+, #2937). A state built without a snapshot returns
+// nil, which keeps model-sticky off exactly like the former nil
+// RetryPolicyProvider did.
+func modelStickyRetryPolicy(state *PersistenceState) *biz.RetryPolicy {
+	if state == nil || state.Settings == nil {
+		return nil
+	}
+	return &state.Settings.RetryPolicy
+}

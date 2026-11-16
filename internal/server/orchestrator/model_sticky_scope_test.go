@@ -177,7 +177,7 @@ func TestModelStickyChineseErrorContracts(t *testing.T) {
 func TestModelStickyStreamConflictHasScopedChineseMessage(t *testing.T) {
 	for _, strategy := range []string{biz.LoadBalancerStrategyAdaptive, biz.LoadBalancerStrategyModelSticky} {
 		candidate := &ChannelModelsCandidate{ModelRoutingPolicy: &ModelRoutingPolicy{}, Channel: &biz.Channel{Channel: &ent.Channel{ID: 1, Policies: objects.ChannelPolicies{Stream: objects.CapabilityPolicyRequire}}}}
-		selector := &modelStickyCompatibilitySelector{wrapped: modelStickyResolvedCandidates{[]*ChannelModelsCandidate{candidate}}, policy: stickyRevisionPolicy{strategy: strategy}, key: &ent.APIKey{ID: 42}}
+		selector := &modelStickyCompatibilitySelector{wrapped: modelStickyResolvedCandidates{[]*ChannelModelsCandidate{candidate}}, state: &PersistenceState{Settings: stickySettings(strategy)}, key: &ent.APIKey{ID: 42}}
 		_, err := selector.Select(context.Background(), &llm.Request{Model: "A", RequestType: llm.RequestTypeDecisions})
 		require.Error(t, err)
 		var conflict *StreamPolicyConflictError

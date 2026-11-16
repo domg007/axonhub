@@ -58,6 +58,9 @@ func TestQueryModels_ProjectAPIKeyManagerCanReadModels(t *testing.T) {
 	})
 	channelService := biz.NewChannelServiceForTest(client)
 	modelService := biz.NewModelService(biz.ModelServiceParams{
+		ModelCache: biz.NewModelCacheService(biz.ModelCacheServiceParams{
+			Ent: client,
+		}),
 		ChannelService: channelService,
 		SystemService:  systemService,
 		Ent:            client,
@@ -75,6 +78,22 @@ func TestQueryModels_ProjectAPIKeyManagerCanReadModels(t *testing.T) {
 	channels, err := resolver.AllChannelSummarys(ctx, nil)
 	require.NoError(t, err)
 	require.Len(t, channels, 1)
+
+	pluginCtx, err := authz.DelegatePlugin(ctx, 1, []string{"write_api_keys"})
+	require.NoError(t, err)
+	pluginModels, err := resolver.QueryModels(pluginCtx, QueryModelsInput{})
+	require.NoError(t, err)
+	require.Equal(t, models, pluginModels)
+	pluginChannels, err := resolver.AllChannelSummarys(pluginCtx, nil)
+	require.NoError(t, err)
+	require.Len(t, pluginChannels, 1)
+	require.Equal(t, channels[0].ID, pluginChannels[0].ID)
+	revoked, err := authz.DelegatePlugin(ctx, 2, nil)
+	require.NoError(t, err)
+	_, err = resolver.QueryModels(revoked, QueryModelsInput{})
+	require.Error(t, err)
+	_, err = resolver.AllChannelSummarys(revoked, nil)
+	require.Error(t, err)
 
 	ctxWithoutProject := ent.NewContext(context.Background(), client)
 	ctxWithoutProject = authz.NewUserContext(ctxWithoutProject, userWithEdges.ID)

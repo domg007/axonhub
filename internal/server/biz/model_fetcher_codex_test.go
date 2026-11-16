@@ -54,15 +54,15 @@ func TestModelFetcher_CodexCatalog(t *testing.T) {
 			require.Nil(t, result.Error)
 			imageModelCount := 0
 			for _, model := range result.Models {
-				if model.ID == "gpt-image-2" {
+				if strings.HasPrefix(model.ID, "gpt-image-") {
 					imageModelCount++
 				}
 			}
-			require.Equal(t, 1, imageModelCount)
+			require.Equal(t, 5, imageModelCount)
 			if tt.fallback {
 				require.Len(t, result.Models, len(codex.DefaultModels()))
 			} else {
-				require.Equal(t, []ModelIdentify{{ID: "first-astra"}, {ID: "new-sol"}, {ID: "gpt-image-2"}}, result.Models)
+				require.Equal(t, []ModelIdentify{{ID: "first-astra"}, {ID: "new-sol"}, {ID: "gpt-image-2"}, {ID: "gpt-image-2.5-sunburst"}, {ID: "gpt-image-2.5-flare"}, {ID: "gpt-image-2.6-sunburst"}, {ID: "gpt-image-2.6-flare"}}, result.Models)
 			}
 		})
 	}
@@ -148,18 +148,53 @@ func TestModelFetcher_CodexAPIKeyWithOfficialBaseURL_usesCatalog(t *testing.T) {
 	require.Equal(t, []ModelIdentify{{ID: "official-url-api-key-model"}}, result.Models)
 }
 
-func TestModelFetcher_CodexThirdPartyCatalogRejectsHTTP(t *testing.T) {
-	key := "synthetic-api-key"
-	result, err := NewModelFetcher(httpclient.NewHttpClient(), nil).FetchModels(t.Context(), FetchModelsInput{
-		ChannelType: channel.TypeCodex.String(),
-		BaseURL:     "http://relay.example/backend-api/codex",
-		APIKey:      &key,
-	})
+func TestModelFetcher_CodexThirdPartyCatalogAllowsHTTP(t *testing.T) {
+	for _, scheme := range []string{"http", "ws"} {
+		t.Run(scheme, func(t *testing.T) {
+			var requestURL, authorization string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestURL = r.URL.Path
+				authorization = r.Header.Get("Authorization")
+				_, _ = w.Write([]byte(`{"models":[{"slug":"local-model","visibility":"list"}]}`))
+			}))
+			defer server.Close()
 
-	require.NoError(t, err)
-	require.Equal(t, "failed to prepare Codex models request: Codex catalog URL must use HTTPS", *result.Error)
-	require.Empty(t, result.Models)
-	require.False(t, result.Fallback)
+			key := "synthetic-api-key"
+			result, err := NewModelFetcher(httpclient.NewHttpClientWithClient(server.Client()), nil).FetchModels(t.Context(), FetchModelsInput{
+				ChannelType: channel.TypeCodex.String(),
+				BaseURL:     scheme + strings.TrimPrefix(server.URL, "http") + "/backend-api/codex#",
+				APIKey:      &key,
+			})
+
+			require.NoError(t, err)
+			require.Nil(t, result.Error)
+			require.False(t, result.Fallback)
+			require.Equal(t, "/backend-api/codex/models", requestURL)
+			require.Equal(t, "Bearer synthetic-api-key", authorization)
+			require.Equal(t, []ModelIdentify{{ID: "local-model"}}, result.Models)
+		})
+	}
+}
+
+func TestModelFetcher_CodexThirdPartyCatalogRejectsInvalidURL(t *testing.T) {
+	for _, baseURL := range []string{"ftp://relay.example/catalog", "http:///catalog", "://invalid"} {
+		t.Run(baseURL, func(t *testing.T) {
+			client := httpclient.NewHttpClientWithClient(&http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				t.Fatal("invalid catalog URL must not send a request")
+				return nil, nil
+			})})
+			key := "synthetic-api-key"
+			result, err := NewModelFetcher(client, nil).FetchModels(t.Context(), FetchModelsInput{
+				ChannelType: channel.TypeCodex.String(), BaseURL: baseURL, APIKey: &key,
+			})
+
+			require.NoError(t, err)
+			require.NotNil(t, result.Error)
+			require.Equal(t, "failed to prepare Codex models request: Codex catalog URL must use HTTP or HTTPS", *result.Error)
+			require.Empty(t, result.Models)
+			require.False(t, result.Fallback)
+		})
+	}
 }
 
 func TestModelFetcher_CodexThirdPartyCatalogRejectsRedirect(t *testing.T) {
@@ -294,7 +329,13 @@ func TestModelFetcher_CodexStoredCredentialReplacement(t *testing.T) {
 				require.False(t, result.Fallback)
 				want := []ModelIdentify{{ID: "new-model"}}
 				if mode != "replace-api-key" {
-					want = append(want, ModelIdentify{ID: "gpt-image-2"})
+					want = append(want,
+						ModelIdentify{ID: "gpt-image-2"},
+						ModelIdentify{ID: "gpt-image-2.5-sunburst"},
+						ModelIdentify{ID: "gpt-image-2.5-flare"},
+						ModelIdentify{ID: "gpt-image-2.6-sunburst"},
+						ModelIdentify{ID: "gpt-image-2.6-flare"},
+					)
 				}
 				require.Equal(t, want, result.Models)
 			}
