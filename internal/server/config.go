@@ -127,7 +127,8 @@ type SSEKeepAlive struct {
 // request completes, for a specific set of downstream model IDs.
 type EarlySSEHeartbeat struct {
 	// Models is a comma separated allow list of downstream model IDs.
-	// A trailing "*" matches by prefix, e.g. "[anyrouter]/*".
+	// "*" matches any run of characters and may appear anywhere, e.g.
+	// "[anyrouter]/*" or "*gemini*". See internal/server/api/early_sse_heartbeat.go.
 	// Empty (the default) keeps the stock behaviour.
 	Models string `conf:"models" yaml:"models" json:"models"`
 }

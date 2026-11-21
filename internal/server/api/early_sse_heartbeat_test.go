@@ -24,7 +24,7 @@ func TestParseEarlyHeartbeatModels(t *testing.T) {
 		t.Fatal("expected a matcher")
 	}
 
-	if len(matcher.exact) != 1 || len(matcher.prefixes) != 1 {
+	if len(matcher.exact) != 1 || len(matcher.patterns) != 1 {
 		t.Fatalf("unexpected matcher contents: %+v", matcher)
 	}
 }
@@ -46,6 +46,26 @@ func TestEarlyHeartbeatMatcher(t *testing.T) {
 		{"prefix wildcard miss", "[anyrouter]/*", "[openai]/gpt-4o", false},
 		{"match all", "*", "whatever", true},
 		{"empty model never matches", "*", "", false},
+
+		// Wildcards anywhere in the pattern.
+		{"contains", "*gemini*", "[youzi-code]/gemini-3-pro", true},
+		{"contains bare model", "*gemini*", "gemini-2.5-flash", true},
+		{"contains case insensitive", "*Gemini*", "[x]/GEMINI-PRO", true},
+		{"contains miss", "*gemini*", "[anyrouter]/claude-opus-5-5", false},
+		{"contains also hits channel name", "*gemini*", "[gemini-proxy]/gpt-5", true},
+		{"suffix wildcard", "*-pro", "[x]/gemini-3-pro", true},
+		{"suffix wildcard miss", "*-pro", "[x]/gemini-3-pro-preview", false},
+		{"middle wildcard", "[anyrouter]/*-5-5", "[anyrouter]/claude-opus-5-5", true},
+		{"middle wildcard miss", "[anyrouter]/*-5-5", "[openai]/claude-opus-5-5", false},
+		{"multiple wildcards in order", "*claude*opus*", "[x]/claude-opus-5-5", true},
+		{"multiple wildcards wrong order", "*opus*claude*", "[x]/claude-opus-5-5", false},
+		{"star matches nothing", "gemini*pro", "geminipro", true},
+		{"consecutive stars", "gem**ini", "gemini", true},
+		{"prefix and suffix must not overlap", "ab*ba", "aba", false},
+		{"brackets are literal", "[ab]*", "a-model", false},
+		{"brackets are literal hit", "[ab]*", "[ab]/model", true},
+		{"mixed with exact entries", "[anyrouter]/*, *gemini* ,gpt-4o", "gpt-4o", true},
+		{"mixed with exact entries wildcard hit", "[anyrouter]/*, *gemini* ,gpt-4o", "[y]/gemini-3-pro", true},
 	}
 
 	for _, tc := range cases {

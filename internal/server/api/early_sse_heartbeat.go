@@ -28,8 +28,11 @@ package api
 //	server.early_sse_heartbeat.models  /  AXONHUB_SERVER_EARLY_SSE_HEARTBEAT_MODELS
 //
 // Comma separated list of downstream model IDs, i.e. the value the client puts
-// in the request body, after channel prefixes are applied. A trailing "*"
-// matches by prefix, e.g. "[anyrouter]/*".
+// in the request body, after channel prefixes are applied. "*" is a wildcard
+// for any run of characters (including none) and may appear anywhere, e.g.
+// "[anyrouter]/*" or "*gemini*". Patterns are matched against the whole ID,
+// channel prefix included. No other character is special: "[" and "]" are
+// literal, so "[anyrouter]" is not a character class.
 
 import (
 	"bytes"
@@ -49,9 +52,12 @@ import (
 
 // earlyHeartbeatMatcher matches downstream model IDs against the configured
 // allow list. Matching is case-insensitive.
+//
+// Entries without "*" go into a set for an O(1) lookup. Entries with "*" are
+// pre-split on "*" at parse time, so the hot path never re-parses a pattern.
 type earlyHeartbeatMatcher struct {
 	exact    map[string]struct{}
-	prefixes []string
+	patterns [][]string
 }
 
 func parseEarlyHeartbeatModels(raw string) *earlyHeartbeatMatcher {
@@ -62,20 +68,20 @@ func parseEarlyHeartbeatModels(raw string) *earlyHeartbeatMatcher {
 	matcher := &earlyHeartbeatMatcher{exact: make(map[string]struct{})}
 
 	for _, item := range strings.Split(raw, ",") {
-		item = strings.TrimSpace(item)
+		item = strings.ToLower(strings.TrimSpace(item))
 		if item == "" {
 			continue
 		}
 
-		if strings.HasSuffix(item, "*") {
-			matcher.prefixes = append(matcher.prefixes, strings.ToLower(strings.TrimSuffix(item, "*")))
+		if strings.Contains(item, "*") {
+			matcher.patterns = append(matcher.patterns, strings.Split(item, "*"))
 			continue
 		}
 
-		matcher.exact[strings.ToLower(item)] = struct{}{}
+		matcher.exact[item] = struct{}{}
 	}
 
-	if len(matcher.exact) == 0 && len(matcher.prefixes) == 0 {
+	if len(matcher.exact) == 0 && len(matcher.patterns) == 0 {
 		return nil
 	}
 
@@ -96,13 +102,43 @@ func (m *earlyHeartbeatMatcher) matches(model string) bool {
 		return true
 	}
 
-	for _, prefix := range m.prefixes {
-		if strings.HasPrefix(model, prefix) {
+	for _, parts := range m.patterns {
+		if wildcardMatch(parts, model) {
 			return true
 		}
 	}
 
 	return false
+}
+
+// wildcardMatch reports whether s matches a pattern that was split on "*".
+// parts has at least two elements: the text before the first "*", the text
+// between consecutive "*"s, and the text after the last "*".
+//
+// The first part must be a prefix of s and the last part a suffix; the middle
+// parts must appear in order in between. Taking the leftmost occurrence of
+// each middle part is always safe, because it leaves the most room for the
+// parts that follow.
+func wildcardMatch(parts []string, s string) bool {
+	first, last := parts[0], parts[len(parts)-1]
+	if !strings.HasPrefix(s, first) {
+		return false
+	}
+
+	s = s[len(first):]
+
+	for _, part := range parts[1 : len(parts)-1] {
+		idx := strings.Index(s, part)
+		if idx < 0 {
+			return false
+		}
+
+		s = s[idx+len(part):]
+	}
+
+	// Checked on the remainder, so the suffix can never overlap text already
+	// consumed by the prefix or a middle part.
+	return strings.HasSuffix(s, last)
 }
 
 // The configuration string is immutable for the lifetime of a process, so the
