@@ -430,6 +430,58 @@ var (
 			},
 		},
 	}
+	// PluginSchedulesColumns holds the columns for the "plugin_schedules" table.
+	PluginSchedulesColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt, Increment: true},
+		{Name: "installation_id", Type: field.TypeInt},
+		{Name: "key", Type: field.TypeString, Size: 32},
+		{Name: "override_cron", Type: field.TypeString, Size: 128, Default: ""},
+		{Name: "override_timezone", Type: field.TypeString, Size: 64, Default: ""},
+		{Name: "paused", Type: field.TypeBool, Default: false},
+		{Name: "last_slot", Type: field.TypeInt64, Default: 0},
+		{Name: "active_run_id", Type: field.TypeInt, Default: 0},
+		{Name: "lease_until", Type: field.TypeInt64, Default: 0},
+	}
+	// PluginSchedulesTable holds the schema information for the "plugin_schedules" table.
+	PluginSchedulesTable = &schema.Table{
+		Name:       "plugin_schedules",
+		Columns:    PluginSchedulesColumns,
+		PrimaryKey: []*schema.Column{PluginSchedulesColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "plugin_schedules_by_installation_key",
+				Unique:  true,
+				Columns: []*schema.Column{PluginSchedulesColumns[1], PluginSchedulesColumns[2]},
+			},
+		},
+	}
+	// PluginScheduleRunsColumns holds the columns for the "plugin_schedule_runs" table.
+	PluginScheduleRunsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt, Increment: true},
+		{Name: "schedule_id", Type: field.TypeInt},
+		{Name: "scheduled_at", Type: field.TypeTime, Nullable: true},
+		{Name: "started_at", Type: field.TypeTime},
+		{Name: "finished_at", Type: field.TypeTime, Nullable: true},
+		{Name: "status", Type: field.TypeString, Size: 16},
+	}
+	// PluginScheduleRunsTable holds the schema information for the "plugin_schedule_runs" table.
+	PluginScheduleRunsTable = &schema.Table{
+		Name:       "plugin_schedule_runs",
+		Columns:    PluginScheduleRunsColumns,
+		PrimaryKey: []*schema.Column{PluginScheduleRunsColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "plugin_schedule_runs_by_schedule_slot",
+				Unique:  true,
+				Columns: []*schema.Column{PluginScheduleRunsColumns[1], PluginScheduleRunsColumns[2]},
+			},
+			{
+				Name:    "plugin_schedule_runs_by_schedule_id",
+				Unique:  false,
+				Columns: []*schema.Column{PluginScheduleRunsColumns[1], PluginScheduleRunsColumns[0]},
+			},
+		},
+	}
 	// PluginStoragesColumns holds the columns for the "plugin_storages" table.
 	PluginStoragesColumns = []*schema.Column{
 		{Name: "id", Type: field.TypeInt, Increment: true},
@@ -453,6 +505,50 @@ var (
 				Columns: []*schema.Column{PluginStoragesColumns[3], PluginStoragesColumns[4], PluginStoragesColumns[5]},
 			},
 		},
+	}
+	// PluginTableOperationsColumns holds the columns for the "plugin_table_operations" table.
+	PluginTableOperationsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt, Increment: true},
+		{Name: "storage_id", Type: field.TypeInt},
+		{Name: "kind", Type: field.TypeString, Size: 16},
+		{Name: "tables", Type: field.TypeJSON},
+		{Name: "names", Type: field.TypeJSON},
+		{Name: "package_sha", Type: field.TypeString, Size: 64, Default: ""},
+		{Name: "last_error", Type: field.TypeString, Size: 512, Default: ""},
+		{Name: "retry_at", Type: field.TypeInt64, Default: 0},
+	}
+	// PluginTableOperationsTable holds the schema information for the "plugin_table_operations" table.
+	PluginTableOperationsTable = &schema.Table{
+		Name:       "plugin_table_operations",
+		Columns:    PluginTableOperationsColumns,
+		PrimaryKey: []*schema.Column{PluginTableOperationsColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "plugin_table_operations_by_storage_kind",
+				Unique:  true,
+				Columns: []*schema.Column{PluginTableOperationsColumns[1], PluginTableOperationsColumns[2]},
+			},
+			{
+				Name:    "plugin_table_operations_by_kind_retry",
+				Unique:  false,
+				Columns: []*schema.Column{PluginTableOperationsColumns[2], PluginTableOperationsColumns[7], PluginTableOperationsColumns[0]},
+			},
+		},
+	}
+	// PluginTableStoragesColumns holds the columns for the "plugin_table_storages" table.
+	PluginTableStoragesColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt, Increment: true},
+		{Name: "plugin_id", Type: field.TypeString, Size: 64},
+		{Name: "active_plugin_id", Type: field.TypeString, Unique: true, Nullable: true, Size: 64},
+		{Name: "tables", Type: field.TypeJSON},
+		{Name: "names", Type: field.TypeJSON},
+		{Name: "revision", Type: field.TypeInt, Default: 0},
+	}
+	// PluginTableStoragesTable holds the schema information for the "plugin_table_storages" table.
+	PluginTableStoragesTable = &schema.Table{
+		Name:       "plugin_table_storages",
+		Columns:    PluginTableStoragesColumns,
+		PrimaryKey: []*schema.Column{PluginTableStoragesColumns[0]},
 	}
 	// ProjectsColumns holds the columns for the "projects" table.
 	ProjectsColumns = []*schema.Column{
@@ -602,6 +698,7 @@ var (
 		{Name: "format", Type: field.TypeString, Default: "openai/chat_completions"},
 		{Name: "request_headers", Type: field.TypeJSON, Nullable: true},
 		{Name: "request_body", Type: field.TypeJSON},
+		{Name: "request_body_chunked", Type: field.TypeBool, Default: false},
 		{Name: "response_headers", Type: field.TypeJSON, Nullable: true},
 		{Name: "response_body", Type: field.TypeJSON, Nullable: true},
 		{Name: "response_chunks", Type: field.TypeJSON, Nullable: true},
@@ -631,31 +728,31 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "requests_api_keys_requests",
-				Columns:    []*schema.Column{RequestsColumns[25]},
+				Columns:    []*schema.Column{RequestsColumns[26]},
 				RefColumns: []*schema.Column{APIKeysColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
 			{
 				Symbol:     "requests_channels_requests",
-				Columns:    []*schema.Column{RequestsColumns[26]},
+				Columns:    []*schema.Column{RequestsColumns[27]},
 				RefColumns: []*schema.Column{ChannelsColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
 			{
 				Symbol:     "requests_data_storages_requests",
-				Columns:    []*schema.Column{RequestsColumns[27]},
+				Columns:    []*schema.Column{RequestsColumns[28]},
 				RefColumns: []*schema.Column{DataStoragesColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
 			{
 				Symbol:     "requests_projects_requests",
-				Columns:    []*schema.Column{RequestsColumns[28]},
+				Columns:    []*schema.Column{RequestsColumns[29]},
 				RefColumns: []*schema.Column{ProjectsColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
 			{
 				Symbol:     "requests_traces_requests",
-				Columns:    []*schema.Column{RequestsColumns[29]},
+				Columns:    []*schema.Column{RequestsColumns[30]},
 				RefColumns: []*schema.Column{TracesColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
@@ -664,37 +761,109 @@ var (
 			{
 				Name:    "requests_by_api_key_id_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{RequestsColumns[25], RequestsColumns[1]},
+				Columns: []*schema.Column{RequestsColumns[26], RequestsColumns[1]},
 			},
 			{
 				Name:    "requests_by_project_id_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{RequestsColumns[28], RequestsColumns[1]},
+				Columns: []*schema.Column{RequestsColumns[29], RequestsColumns[1]},
 			},
 			{
 				Name:    "requests_by_project_id_user_id_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{RequestsColumns[28], RequestsColumns[3], RequestsColumns[1]},
+				Columns: []*schema.Column{RequestsColumns[29], RequestsColumns[3], RequestsColumns[1]},
 			},
 			{
 				Name:    "requests_by_channel_id_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{RequestsColumns[26], RequestsColumns[1]},
+				Columns: []*schema.Column{RequestsColumns[27], RequestsColumns[1]},
 			},
 			{
 				Name:    "requests_by_trace_id_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{RequestsColumns[29], RequestsColumns[1]},
+				Columns: []*schema.Column{RequestsColumns[30], RequestsColumns[1]},
 			},
 			{
 				Name:    "requests_by_external_id_api_key_id_status_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{RequestsColumns[13], RequestsColumns[25], RequestsColumns[14], RequestsColumns[1]},
+				Columns: []*schema.Column{RequestsColumns[14], RequestsColumns[26], RequestsColumns[15], RequestsColumns[1]},
 			},
 			{
 				Name:    "requests_by_created_at",
 				Unique:  false,
 				Columns: []*schema.Column{RequestsColumns[1]},
+			},
+		},
+	}
+	// RequestBodyChunksColumns holds the columns for the "request_body_chunks" table.
+	RequestBodyChunksColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt, Increment: true},
+		{Name: "project_id", Type: field.TypeInt},
+		{Name: "hash", Type: field.TypeString, Size: 64},
+		{Name: "data", Type: field.TypeBytes, SchemaType: map[string]string{"mysql": "mediumblob"}},
+		{Name: "created_at", Type: field.TypeTime, Default: schema.Expr("CURRENT_TIMESTAMP")},
+	}
+	// RequestBodyChunksTable holds the schema information for the "request_body_chunks" table.
+	RequestBodyChunksTable = &schema.Table{
+		Name:       "request_body_chunks",
+		Columns:    RequestBodyChunksColumns,
+		PrimaryKey: []*schema.Column{RequestBodyChunksColumns[0]},
+		Indexes: []*schema.Index{
+			{
+				Name:    "request_body_chunks_by_project_hash",
+				Unique:  true,
+				Columns: []*schema.Column{RequestBodyChunksColumns[1], RequestBodyChunksColumns[2]},
+			},
+		},
+	}
+	// RequestBodyChunkRefsColumns holds the columns for the "request_body_chunk_refs" table.
+	RequestBodyChunkRefsColumns = []*schema.Column{
+		{Name: "id", Type: field.TypeInt, Increment: true},
+		{Name: "position", Type: field.TypeInt},
+		{Name: "request_id", Type: field.TypeInt, Nullable: true},
+		{Name: "chunk_id", Type: field.TypeInt},
+		{Name: "execution_id", Type: field.TypeInt, Nullable: true},
+	}
+	// RequestBodyChunkRefsTable holds the schema information for the "request_body_chunk_refs" table.
+	RequestBodyChunkRefsTable = &schema.Table{
+		Name:       "request_body_chunk_refs",
+		Columns:    RequestBodyChunkRefsColumns,
+		PrimaryKey: []*schema.Column{RequestBodyChunkRefsColumns[0]},
+		ForeignKeys: []*schema.ForeignKey{
+			{
+				Symbol:     "request_body_chunk_refs_requests_request_body_chunks",
+				Columns:    []*schema.Column{RequestBodyChunkRefsColumns[2]},
+				RefColumns: []*schema.Column{RequestsColumns[0]},
+				OnDelete:   schema.Cascade,
+			},
+			{
+				Symbol:     "request_body_chunk_refs_request_body_chunks_references",
+				Columns:    []*schema.Column{RequestBodyChunkRefsColumns[3]},
+				RefColumns: []*schema.Column{RequestBodyChunksColumns[0]},
+				OnDelete:   schema.Restrict,
+			},
+			{
+				Symbol:     "request_body_chunk_refs_request_executions_request_body_chunks",
+				Columns:    []*schema.Column{RequestBodyChunkRefsColumns[4]},
+				RefColumns: []*schema.Column{RequestExecutionsColumns[0]},
+				OnDelete:   schema.Cascade,
+			},
+		},
+		Indexes: []*schema.Index{
+			{
+				Name:    "request_body_chunk_refs_by_request_position",
+				Unique:  true,
+				Columns: []*schema.Column{RequestBodyChunkRefsColumns[2], RequestBodyChunkRefsColumns[1]},
+			},
+			{
+				Name:    "request_body_chunk_refs_by_execution_position",
+				Unique:  true,
+				Columns: []*schema.Column{RequestBodyChunkRefsColumns[4], RequestBodyChunkRefsColumns[1]},
+			},
+			{
+				Name:    "request_body_chunk_refs_by_chunk",
+				Unique:  false,
+				Columns: []*schema.Column{RequestBodyChunkRefsColumns[3]},
 			},
 		},
 	}
@@ -712,6 +881,7 @@ var (
 		{Name: "reasoning_effort", Type: field.TypeString, Nullable: true},
 		{Name: "channel_api_key_suffix", Type: field.TypeString, Nullable: true},
 		{Name: "request_body", Type: field.TypeJSON},
+		{Name: "request_body_chunked", Type: field.TypeBool, Default: false},
 		{Name: "response_headers", Type: field.TypeJSON, Nullable: true},
 		{Name: "response_body", Type: field.TypeJSON, Nullable: true},
 		{Name: "response_chunks", Type: field.TypeJSON, Nullable: true},
@@ -737,19 +907,19 @@ var (
 		ForeignKeys: []*schema.ForeignKey{
 			{
 				Symbol:     "request_executions_channels_executions",
-				Columns:    []*schema.Column{RequestExecutionsColumns[25]},
+				Columns:    []*schema.Column{RequestExecutionsColumns[26]},
 				RefColumns: []*schema.Column{ChannelsColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
 			{
 				Symbol:     "request_executions_data_storages_executions",
-				Columns:    []*schema.Column{RequestExecutionsColumns[26]},
+				Columns:    []*schema.Column{RequestExecutionsColumns[27]},
 				RefColumns: []*schema.Column{DataStoragesColumns[0]},
 				OnDelete:   schema.SetNull,
 			},
 			{
 				Symbol:     "request_executions_requests_executions",
-				Columns:    []*schema.Column{RequestExecutionsColumns[27]},
+				Columns:    []*schema.Column{RequestExecutionsColumns[28]},
 				RefColumns: []*schema.Column{RequestsColumns[0]},
 				OnDelete:   schema.NoAction,
 			},
@@ -758,17 +928,17 @@ var (
 			{
 				Name:    "request_executions_by_request_id_status_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{RequestExecutionsColumns[27], RequestExecutionsColumns[17], RequestExecutionsColumns[1]},
+				Columns: []*schema.Column{RequestExecutionsColumns[28], RequestExecutionsColumns[18], RequestExecutionsColumns[1]},
 			},
 			{
 				Name:    "request_executions_by_request_id_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{RequestExecutionsColumns[27], RequestExecutionsColumns[1]},
+				Columns: []*schema.Column{RequestExecutionsColumns[28], RequestExecutionsColumns[1]},
 			},
 			{
 				Name:    "request_executions_by_channel_id_created_at",
 				Unique:  false,
-				Columns: []*schema.Column{RequestExecutionsColumns[25], RequestExecutionsColumns[1]},
+				Columns: []*schema.Column{RequestExecutionsColumns[26], RequestExecutionsColumns[1]},
 			},
 		},
 	}
@@ -1133,12 +1303,18 @@ var (
 		ModelsTable,
 		OidcIdentitiesTable,
 		PluginsTable,
+		PluginSchedulesTable,
+		PluginScheduleRunsTable,
 		PluginStoragesTable,
+		PluginTableOperationsTable,
+		PluginTableStoragesTable,
 		ProjectsTable,
 		PromptsTable,
 		PromptProtectionRulesTable,
 		ProviderQuotaStatusTable,
 		RequestsTable,
+		RequestBodyChunksTable,
+		RequestBodyChunkRefsTable,
 		RequestExecutionsTable,
 		RolesTable,
 		SystemsTable,
@@ -1168,6 +1344,9 @@ func init() {
 	RequestsTable.ForeignKeys[2].RefTable = DataStoragesTable
 	RequestsTable.ForeignKeys[3].RefTable = ProjectsTable
 	RequestsTable.ForeignKeys[4].RefTable = TracesTable
+	RequestBodyChunkRefsTable.ForeignKeys[0].RefTable = RequestsTable
+	RequestBodyChunkRefsTable.ForeignKeys[1].RefTable = RequestBodyChunksTable
+	RequestBodyChunkRefsTable.ForeignKeys[2].RefTable = RequestExecutionsTable
 	RequestExecutionsTable.ForeignKeys[0].RefTable = ChannelsTable
 	RequestExecutionsTable.ForeignKeys[1].RefTable = DataStoragesTable
 	RequestExecutionsTable.ForeignKeys[2].RefTable = RequestsTable

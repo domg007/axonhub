@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/99designs/gqlgen/graphql/playground"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/fx"
@@ -67,7 +68,7 @@ func SetupRoutes(server *Server, handlers Handlers, client *ent.Client, services
 	server.Use(middleware.WithIPAccessControl(ipAccessControl))
 
 	// Serve static frontend files
-	server.NoRoute(static.Handler())
+	server.NoRoute(static.Handler(server.Config.BasePath))
 
 	server.Use(middleware.AccessLog())
 	server.Use(middleware.WithEntClient(client))
@@ -131,9 +132,11 @@ func SetupRoutes(server *Server, handlers Handlers, client *ent.Client, services
 	handlers.ModelSticky.RegisterRoutes(adminGroup)
 	// 管理员路由 - 使用 JWT 认证
 	{
-		adminGroup.GET("/playground", middleware.WithTimeout(server.Config.RequestTimeout), func(c *gin.Context) {
-			handlers.Graphql.Playground.ServeHTTP(c.Writer, c.Request)
-		})
+		adminGroup.GET(
+			"/playground",
+			middleware.WithTimeout(server.Config.RequestTimeout),
+			gin.WrapH(playground.Handler("AxonHub", server.Config.BasePath+adminGroupPath+"/graphql")),
+		)
 		adminGroup.POST("/invitations", handlers.Invitation.Create)
 
 		adminGroup.POST("/codex/oauth/start", handlers.Codex.StartOAuth)
@@ -158,7 +161,8 @@ func SetupRoutes(server *Server, handlers Handlers, client *ent.Client, services
 		// Playground API with channel specification support
 		adminGroup.POST(
 			"/playground/chat",
-			middleware.WithTimeout(server.Config.LLMRequestTimeout),
+			middleware.WithLLMTimeout(server.Config.LLMRequestTimeout, server.Config.LLMStreamRequestTimeout),
+			middleware.WithStreamIdleTimeout(server.Config.LLMStreamIdleTimeout),
 			middleware.WithSource(request.SourcePlayground),
 			handlers.Playground.ChatCompletion,
 		)
@@ -216,31 +220,35 @@ func SetupRoutes(server *Server, handlers Handlers, client *ent.Client, services
 		openAPIGroup.POST("/v1/graphql", func(c *gin.Context) {
 			handlers.OpenAPIGraphql.Graphql.ServeHTTP(c.Writer, c.Request)
 		})
-		openAPIGroup.GET("/v1/playground", func(c *gin.Context) {
-			handlers.OpenAPIGraphql.Playground.ServeHTTP(c.Writer, c.Request)
-		})
+		openAPIGroup.GET(
+			"/v1/playground",
+			gin.WrapH(playground.Handler("AxonHub", server.Config.BasePath+openAPIGroup.BasePath()+"/v1/graphql")),
+		)
 
 		openAPIGroup.POST("/webhook/echo", handlers.System.WebhookEcho)
 	}
 
 	registerCodexRoutes(server, handlers, services)
 
+	serverPluginMiddleware := middleware.WithServerPluginMiddleware(services.PluginManager)
 	apiMiddlewares := []gin.HandlerFunc{
+		middleware.WithStreamIdleTimeout(server.Config.LLMStreamIdleTimeout),
 		middleware.WithIPBlocklist(services.SystemService),
 		middleware.WithAPIKeyConfig(services.AuthService, nil),
+		serverPluginMiddleware,
 		middleware.WithSource(request.SourceAPI),
 		middleware.WithThread(server.Config.Trace, services.ThreadService),
 		middleware.WithTrace(server.Config.Trace, services.TraceService),
 	}
 	apiGroup := server.Group("/", append([]gin.HandlerFunc{
-		middleware.WithTimeout(server.Config.LLMRequestTimeout),
+		middleware.WithLLMTimeout(server.Config.LLMRequestTimeout, server.Config.LLMStreamRequestTimeout),
 	}, apiMiddlewares...)...)
 
 	// WebSocket mode owns a long-lived connection and applies its processing
 	// timeout per response.create event, so it must not inherit the ordinary
 	// single-request timeout from apiGroup.
 	responsesWebSocketGroup := server.Group("/", apiMiddlewares...)
-	responsesWebSocketGroup.GET("/v1/responses", handlers.OpenAI.CreateResponseWebSocket(server.Config.LLMRequestTimeout))
+	responsesWebSocketGroup.GET("/v1/responses", handlers.OpenAI.CreateResponseWebSocket(server.Config.LLMStreamRequestTimeout))
 
 	{
 		openaiGroup := apiGroup.Group("/v1")
@@ -306,9 +314,11 @@ func SetupRoutes(server *Server, handlers Handlers, client *ent.Client, services
 		}
 
 		geminiGroup := server.Group("/gemini/:gemini-api-version",
-			middleware.WithTimeout(server.Config.LLMRequestTimeout),
+			middleware.WithLLMTimeout(server.Config.LLMRequestTimeout, server.Config.LLMStreamRequestTimeout),
+			middleware.WithStreamIdleTimeout(server.Config.LLMStreamIdleTimeout),
 			middleware.WithIPBlocklist(services.SystemService),
 			middleware.WithGeminiKeyAuth(services.AuthService),
+			serverPluginMiddleware,
 			middleware.WithSource(request.SourceAPI),
 			middleware.WithThread(server.Config.Trace, services.ThreadService),
 			middleware.WithTrace(server.Config.Trace, services.TraceService),
@@ -318,9 +328,11 @@ func SetupRoutes(server *Server, handlers Handlers, client *ent.Client, services
 
 		// Alias for Gemini API
 		geminiAliasGroup := server.Group("/v1beta",
-			middleware.WithTimeout(server.Config.LLMRequestTimeout),
+			middleware.WithLLMTimeout(server.Config.LLMRequestTimeout, server.Config.LLMStreamRequestTimeout),
+			middleware.WithStreamIdleTimeout(server.Config.LLMStreamIdleTimeout),
 			middleware.WithIPBlocklist(services.SystemService),
 			middleware.WithGeminiKeyAuth(services.AuthService),
+			serverPluginMiddleware,
 			middleware.WithSource(request.SourceAPI),
 			middleware.WithThread(server.Config.Trace, services.ThreadService),
 			middleware.WithTrace(server.Config.Trace, services.TraceService),

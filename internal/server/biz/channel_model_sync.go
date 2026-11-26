@@ -9,6 +9,7 @@ import (
 	"github.com/looplj/axonhub/internal/ent"
 	"github.com/looplj/axonhub/internal/ent/channel"
 	"github.com/looplj/axonhub/internal/log"
+	"github.com/looplj/axonhub/internal/objects"
 	"github.com/looplj/axonhub/internal/pkg/xregexp"
 )
 
@@ -38,9 +39,10 @@ func (svc *ChannelService) syncChannelModels(ctx context.Context) {
 	successCount := 0
 	failureCount := 0
 	changedCount := 0
+	skippedCount := 0
 
 	for _, ch := range channels {
-		_, changed, err := svc.syncChannelModelsForChannel(ctx, ch, nil)
+		result, err := svc.syncChannelModelsForChannel(ctx, ch, nil, syncModelsPeriodically)
 		if err != nil {
 			log.Warn(ctx, "failed to sync models for channel",
 				log.Int("channel_id", ch.ID),
@@ -48,9 +50,11 @@ func (svc *ChannelService) syncChannelModels(ctx context.Context) {
 				log.Cause(err))
 
 			failureCount++
+		} else if result.Fallback {
+			skippedCount++
 		} else {
 			successCount++
-			if changed {
+			if result.changed {
 				changedCount++
 			}
 		}
@@ -63,29 +67,57 @@ func (svc *ChannelService) syncChannelModels(ctx context.Context) {
 	log.Info(ctx, "completed model sync for channels",
 		log.Int("success", successCount),
 		log.Int("failure", failureCount),
+		log.Int("skipped", skippedCount),
 		log.Int("changed", changedCount))
 }
 
+type SyncChannelModelsResult struct {
+	*ent.Channel
+
+	CodexCatalogVersion       *CodexCatalogVersion
+	CodexCatalogSkippedReason *string
+	Fallback                  bool
+	changed                   bool
+}
+
 // syncChannelModelsForChannel syncs supported models for a single channel.
-func (svc *ChannelService) syncChannelModelsForChannel(ctx context.Context, ch *ent.Channel, patternOverride *string) (*ent.Channel, bool, error) {
+func (svc *ChannelService) syncChannelModelsForChannel(ctx context.Context, ch *ent.Channel, patternOverride *string, mode modelFetchMode) (*SyncChannelModelsResult, error) {
+	fetchType := ch.Type
+	fetchBaseURL := ch.BaseURL
 	modelFetcher := NewModelFetcher(svc.httpClient, svc)
 
-	result, err := modelFetcher.FetchModels(ctx, FetchModelsInput{
-		ChannelType: ch.Type.String(),
-		BaseURL:     ch.BaseURL,
+	result, err := modelFetcher.fetchModels(ctx, FetchModelsInput{
+		ChannelType: fetchType.String(),
+		BaseURL:     fetchBaseURL,
 		ChannelID:   lo.ToPtr(ch.ID),
-	})
+	}, mode)
 	svc.observeModelFetchForAlert(ctx, ch, result, err)
 	if err != nil {
-		return nil, false, fmt.Errorf("failed to fetch models: %w", err)
+		return nil, fmt.Errorf("failed to fetch models: %w", err)
 	}
 
 	// Check if there was an error in the result
 	if result.Error != nil {
-		return nil, false, fmt.Errorf("model fetch returned error: %s", *result.Error)
+		return nil, fmt.Errorf("model fetch returned error: %s", *result.Error)
+	}
+	syncResult := &SyncChannelModelsResult{
+		Channel:                   ch,
+		CodexCatalogVersion:       result.CodexCatalogVersion,
+		CodexCatalogSkippedReason: result.CodexCatalogSkippedReason,
+		Fallback:                  result.Fallback,
+	}
+	if result.CodexCatalogSkippedReason != nil || result.FallbackReason != nil {
+		return syncResult, nil
 	}
 	if result.Fallback {
-		return nil, false, fmt.Errorf("model fetch returned fallback models")
+		return syncResult, fmt.Errorf("model fetch returned fallback models")
+	}
+
+	pricedModels := make(map[string]*objects.ModelPrice)
+	for _, fetchedModel := range result.Models {
+		if fetchedModel.Pricing != nil {
+			pricedModels[fetchedModel.ID] = fetchedModel.Pricing
+		}
 	}
 
 	// Extract model IDs from fetched models
@@ -175,7 +207,17 @@ func (svc *ChannelService) syncChannelModelsForChannel(ctx context.Context, ch *
 			updatedCh = updated
 		}
 
-		pricesChanged, err := svc.ensureChannelModelPrices(ctx, ch.ID, mergedModels)
+		var endpointTemplates []channelModelPriceTemplate
+		if current.Type != fetchType || current.BaseURL != fetchBaseURL {
+			log.Info(ctx, "endpoint price sync skipped, provider identity changed",
+				log.Int("channel_id", ch.ID),
+				log.String("channel_name", current.Name),
+			)
+		} else {
+			endpointTemplates = svc.syncChannelModelPricesFromEndpoint(ctx, current, pricedModels, mergedModels)
+		}
+
+		pricesChanged, err := svc.ensureChannelModelPrices(ctx, ch.ID, mergedModels, endpointTemplates)
 		if err != nil {
 			return err
 		}
@@ -185,7 +227,7 @@ func (svc *ChannelService) syncChannelModelsForChannel(ctx context.Context, ch *
 		return nil
 	})
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	if ent.TxFromContext(ctx) == nil && updatedCh != nil {
 		updatedCh.Unwrap()
@@ -203,23 +245,58 @@ func (svc *ChannelService) syncChannelModelsForChannel(ctx context.Context, ch *
 	}
 	svc.observeModelChangeForAlert(ctx, ch, updatedCh)
 
-	return updatedCh, changed, nil
+	syncResult.Channel = updatedCh
+	syncResult.changed = changed
+	return syncResult, nil
 }
 
-func (svc *ChannelService) SyncChannelModels(ctx context.Context, channelID int, patternOverride *string) (*ent.Channel, error) {
+// syncChannelModelPricesFromEndpoint returns the endpoint-reported prices as
+// templates. It must not read or merge the current rows: ensureChannelModelPrices
+// merges them against the locked row, so items the endpoint did not report
+// survive concurrent edits.
+func (svc *ChannelService) syncChannelModelPricesFromEndpoint(
+	ctx context.Context,
+	ch *ent.Channel,
+	pricedModels map[string]*objects.ModelPrice,
+	mergedModels []string,
+) []channelModelPriceTemplate {
+	if !supportsEndpointPricing(ch.Type) || len(pricedModels) == 0 || ch.Settings == nil || !ch.Settings.SyncModelPrices {
+		return nil
+	}
+
+	templates := make([]channelModelPriceTemplate, 0, len(pricedModels))
+	for _, modelID := range uniqueNonEmptyModelIDs(mergedModels) {
+		endpointPrice, ok := pricedModels[modelID]
+		if !ok {
+			continue
+		}
+		templates = append(templates, channelModelPriceTemplate{ModelID: modelID, Price: *endpointPrice})
+	}
+
+	if len(templates) > 0 {
+		log.Info(ctx, "collected endpoint model prices",
+			log.Int("channel_id", ch.ID),
+			log.String("channel_name", ch.Name),
+			log.Int("count", len(templates)))
+	}
+
+	return templates
+}
+
+func (svc *ChannelService) SyncChannelModels(ctx context.Context, channelID int, patternOverride *string) (*SyncChannelModelsResult, error) {
 	ch, err := svc.entFromContext(ctx).Channel.Get(ctx, channelID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get channel: %w", err)
 	}
 
-	updated, changed, err := svc.syncChannelModelsForChannel(ctx, ch, patternOverride)
+	result, err := svc.syncChannelModelsForChannel(ctx, ch, patternOverride, syncModelsNow)
 	if err != nil {
-		return nil, err
+		return result, err
 	}
 
-	if changed {
+	if result.changed {
 		svc.reloadChannelsAfterCommit(ctx)
 	}
 
-	return updated, nil
+	return result, nil
 }

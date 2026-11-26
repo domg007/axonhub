@@ -2,6 +2,7 @@ package copilot
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,9 +12,11 @@ import (
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 
 	"github.com/looplj/axonhub/llm"
 	"github.com/looplj/axonhub/llm/httpclient"
+	"github.com/looplj/axonhub/llm/streams"
 )
 
 // mockTokenProvider is a mock implementation of TokenProvider for testing.
@@ -382,6 +385,60 @@ func TestOutboundTransformer_TransformRequest(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestOutboundTransformerResponsesDowngradesCalllessFunctionOutputs(t *testing.T) {
+	transformer, err := NewOutboundTransformer(OutboundTransformerParams{
+		TokenProvider: &mockTokenProvider{token: "test-token"},
+	})
+	require.NoError(t, err)
+
+	request := &llm.Request{
+		Model: "gpt-5.4",
+		Messages: []llm.Message{
+			{
+				Role:         "tool",
+				ToolCallID:   lo.ToPtr(""),
+				ToolCallName: lo.ToPtr("automation_update"),
+				Content:      llm.MessageContent{Content: lo.ToPtr("schedule")},
+			},
+			{
+				Role: "assistant",
+				ToolCalls: []llm.ToolCall{
+					{
+						ID:   "call_1",
+						Type: "function",
+						Function: llm.FunctionCall{
+							Name:      "exec",
+							Arguments: "{}",
+						},
+					},
+				},
+			},
+			{
+				Role:       "tool",
+				ToolCallID: lo.ToPtr("call_1"),
+				Content:    llm.MessageContent{Content: lo.ToPtr("ok")},
+			},
+		},
+	}
+
+	httpReq, err := transformer.TransformRequest(t.Context(), request)
+	require.NoError(t, err)
+	require.Equal(t, DefaultCopilotBaseURL+"/v1/responses", httpReq.URL)
+
+	// The orchestrator applies this after raw body pass-through and overrides.
+	httpReq = transformer.FinalizeTransportRequest(httpReq)
+
+	callless := gjson.GetBytes(httpReq.Body, "input.0")
+	require.Equal(t, "message", callless.Get("type").String())
+	require.Equal(t, "user", callless.Get("role").String())
+	require.Equal(t, "input_text", callless.Get("content.0.type").String())
+	require.Equal(t, "schedule", callless.Get("content.0.text").String())
+	require.Equal(t, "function_call", gjson.GetBytes(httpReq.Body, "input.1.type").String())
+	require.Equal(t, "function_call_output", gjson.GetBytes(httpReq.Body, "input.2.type").String())
+	require.Equal(t, "call_1", gjson.GetBytes(httpReq.Body, "input.2.call_id").String())
+	require.Equal(t, "ok", gjson.GetBytes(httpReq.Body, "input.2.output").String())
 }
 
 func TestOutboundTransformer_TransformRequest_VisionHeaders(t *testing.T) {
@@ -1248,4 +1305,107 @@ func TestInferCopilotInitiator(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestOutboundTransformer_TransformRequest_ReplaysReasoningOpaque(t *testing.T) {
+	opaque := "V+l5Rhje"
+	transformer, err := NewOutboundTransformer(OutboundTransformerParams{
+		TokenProvider: &mockTokenProvider{token: "ghu_test"},
+	})
+	require.NoError(t, err)
+
+	req, err := transformer.TransformRequest(t.Context(), &llm.Request{
+		Model: "gemini-3.8-flash",
+		Messages: []llm.Message{
+			{Role: "system", Content: llm.MessageContent{Content: lo.ToPtr("system")}},
+			{Role: "user", Content: llm.MessageContent{Content: lo.ToPtr("hi")}},
+			{
+				Role:               "assistant",
+				Content:            llm.MessageContent{Content: lo.ToPtr("ok")},
+				ReasoningContent:   lo.ToPtr("thinking"),
+				ReasoningSignature: lo.ToPtr(opaque),
+				ToolCalls: []llm.ToolCall{{
+					ID:   "call_1",
+					Type: "function",
+					Function: llm.FunctionCall{
+						Name:      "Read",
+						Arguments: `{"path":"a"}`,
+					},
+					TransformerMetadata: map[string]any{
+						"google_thought_signature": "CgR0ZXN0",
+					},
+				}},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	assistant := gjson.GetBytes(req.Body, "messages.2")
+	assert.Equal(t, opaque, assistant.Get("reasoning_opaque").String())
+	assert.Equal(t, "CgR0ZXN0", assistant.Get("tool_calls.0.extra_content.google.thought_signature").String())
+	assert.False(t, gjson.GetBytes(req.Body, "messages.0.reasoning_opaque").Exists())
+	assert.False(t, gjson.GetBytes(req.Body, "messages.1.reasoning_opaque").Exists())
+}
+
+type currentCountingStream struct {
+	streams.Stream[*httpclient.StreamEvent]
+	reads int
+}
+
+func (s *currentCountingStream) Current() *httpclient.StreamEvent {
+	s.reads++
+	return s.Stream.Current()
+}
+
+func TestCopilotStreamReadsEachSourceEventOnce(t *testing.T) {
+	source := &currentCountingStream{Stream: streams.SliceStream([]*httpclient.StreamEvent{
+		{Data: []byte(`{"choices":[{"index":0,"delta":{"reasoning_text":"thinking"}}]}`)},
+		{Data: []byte(`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"Read","arguments":"{}"}}],"reasoning_opaque":"V+l5Rhje"}}]}`)},
+		{Data: []byte(`{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`)},
+	})}
+	transformer, err := NewOutboundTransformer(OutboundTransformerParams{TokenProvider: &mockTokenProvider{token: "test"}})
+	require.NoError(t, err)
+	output, err := transformer.TransformStream(t.Context(), nil, source)
+	require.NoError(t, err)
+	var events []*llm.Response
+	for output.Next() {
+		events = append(events, output.Current())
+		require.Same(t, output.Current(), output.Current())
+	}
+	require.NoError(t, output.Err())
+	require.Len(t, events, 3)
+	require.Equal(t, 3, source.reads)
+	require.Equal(t, "V+l5Rhje", lo.FromPtr(events[1].Choices[0].Delta.ReasoningSignature))
+	require.Equal(t, "{}", events[1].Choices[0].Delta.ToolCalls[0].Function.Arguments)
+}
+
+func TestCopilotRequestRejectsKnownOtherSignatures(t *testing.T) {
+	transformer, err := NewOutboundTransformer(OutboundTransformerParams{TokenProvider: &mockTokenProvider{token: "test"}})
+	require.NoError(t, err)
+	for _, signature := range []string{
+		"CgR0ZXN0", base64.StdEncoding.EncodeToString([]byte("claude-sonnet-5")), "gAAAA_openai",
+	} {
+		req, err := transformer.TransformRequest(t.Context(), &llm.Request{
+			Model:    "gemini-3.8-flash",
+			Messages: []llm.Message{{Role: "assistant", ReasoningSignature: lo.ToPtr(signature)}},
+		})
+		require.NoError(t, err)
+		require.False(t, gjson.GetBytes(req.Body, "messages.0.reasoning_opaque").Exists(), signature)
+	}
+}
+
+func TestCopilotRequestMovesUnknownToolSignatureToReasoningOpaque(t *testing.T) {
+	transformer, err := NewOutboundTransformer(OutboundTransformerParams{TokenProvider: &mockTokenProvider{token: "test"}})
+	require.NoError(t, err)
+	opaque := "V+l5RhjeGPTC"
+	req, err := transformer.TransformRequest(t.Context(), &llm.Request{
+		Model: "gemini-3.8-flash",
+		Messages: []llm.Message{{Role: "assistant", ReasoningSignature: lo.ToPtr(opaque), ToolCalls: []llm.ToolCall{{
+			ID: "call_1", Type: "function", Function: llm.FunctionCall{Name: "Read", Arguments: "{}"},
+			TransformerMetadata: map[string]any{"google_thought_signature": opaque},
+		}}}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, opaque, gjson.GetBytes(req.Body, "messages.0.reasoning_opaque").String())
+	require.False(t, gjson.GetBytes(req.Body, "messages.0.tool_calls.0.extra_content").Exists())
 }

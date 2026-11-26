@@ -2,22 +2,22 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { z } from 'zod';
 import { useFieldArray, useForm, useWatch, type Control } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { useVirtualizer } from '@tanstack/react-virtual';
 import { IconCopy, IconDownload, IconPlus, IconTrash, IconUpload } from '@tabler/icons-react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
-import { AutoCompleteSelect } from '@/components/auto-complete-select';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { AutoCompleteSelect } from '@/components/auto-complete-select';
 import { ModelPriceEditor } from '@/components/model-price-editor';
 import { PriceScheduleEditor } from '@/components/price-schedule-editor';
-import { type ProviderModel, type ProvidersData } from '@/features/models/data/providers.schema';
 import { useProvidersData } from '@/features/models/data/providers';
+import { type ProviderModel, type ProvidersData } from '@/features/models/data/providers.schema';
 import { useGeneralSettings } from '@/features/system/data/system';
 import { useChannels } from '../context/channels-context';
 import { useChannelModelPrices, useSaveChannelModelPrices } from '../data/channels';
@@ -33,11 +33,22 @@ const priceItemCodes = ['prompt_tokens', 'completion_tokens', 'prompt_cached_tok
 const pricingModes = ['flat_fee', 'usage_per_unit', 'usage_tiered', 'usage_volume'] as const;
 const promptWriteCacheVariantCodes = ['five_min', 'one_hour'] as const;
 
-// Default exchange rate applied when filling prices from the model library.
-// Library prices are in USD/MTok; 7.14 (exactly 50/7) matches the official
-// CNY prices (deepseek-chat 0.14/0.28/0.0028 -> CNY 1 / 2 / 0.02).
-// Not persisted: the dialog resets to the default on every open.
-const DEFAULT_EXCHANGE_RATE = 7.14;
+// Original USD-to-CNY fallback for prices from the model library.
+const FALLBACK_EXCHANGE_RATE = 7.14;
+const EXCHANGE_RATE_STORAGE_KEY = 'channels-model-price-default-exchange-rate';
+
+function isValidDefaultExchangeRate(rate: unknown): rate is number {
+  return typeof rate === 'number' && Number.isFinite(rate) && rate > 0;
+}
+
+function readDefaultExchangeRate(): number {
+  try {
+    const stored: unknown = JSON.parse(localStorage.getItem(EXCHANGE_RATE_STORAGE_KEY) ?? 'null');
+    return isValidDefaultExchangeRate(stored) ? stored : FALLBACK_EXCHANGE_RATE;
+  } catch {
+    return FALLBACK_EXCHANGE_RATE;
+  }
+}
 
 const createPriceFormSchema = (t: (key: string) => string) =>
   z
@@ -49,8 +60,12 @@ const createPriceFormSchema = (t: (key: string) => string) =>
             items: z.array(
               z.object({
                 itemCode: z.enum(priceItemCodes),
+                // An empty mode is legal on cache-write items whose 5m/1h variants carry the rates.
                 pricing: z.object({
-                  mode: z.enum(pricingModes),
+                  mode: z
+                    .union([z.enum(pricingModes), z.literal('')])
+                    .optional()
+                    .nullable(),
                   flatFee: z.string().optional().nullable(),
                   usagePerUnit: z.string().optional().nullable(),
                   usageTiered: z
@@ -119,7 +134,11 @@ const createPriceFormSchema = (t: (key: string) => string) =>
                       z.object({
                         itemCode: z.enum(priceItemCodes),
                         pricing: z.object({
-                          mode: z.enum(pricingModes),
+                          // An empty mode is legal on cache-write items whose 5m/1h variants carry the rates.
+                          mode: z
+                            .union([z.enum(pricingModes), z.literal('')])
+                            .optional()
+                            .nullable(),
                           flatFee: z.string().optional().nullable(),
                           usagePerUnit: z.string().optional().nullable(),
                           usageTiered: z
@@ -151,7 +170,7 @@ const createPriceFormSchema = (t: (key: string) => string) =>
         pricePerUnit?: string;
       };
       type PricingLike = {
-        mode?: (typeof pricingModes)[number];
+        mode?: (typeof pricingModes)[number] | '' | null;
         flatFee?: string | null;
         usagePerUnit?: string | null;
         usageTiered?: {
@@ -162,6 +181,7 @@ const createPriceFormSchema = (t: (key: string) => string) =>
       const validatePricing = (pricing: PricingLike | null | undefined, pathPrefix: Array<string | number>) => {
         const requiredMsg = t('price.validation.priceRequired');
         const { mode, flatFee, usagePerUnit, usageTiered } = pricing || {};
+        if (!mode) return;
         if (mode === 'flat_fee' && !flatFee?.trim()) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
@@ -338,7 +358,7 @@ function mapPriceToForm(price: ModelPrice): PriceFormData['prices'][number]['pri
     items: price.items.map((item) => ({
       itemCode: item.itemCode,
       pricing: {
-        mode: item.pricing.mode,
+        mode: item.pricing.mode ?? '',
         flatFee: item.pricing.flatFee?.toString() || '',
         usagePerUnit: item.pricing.usagePerUnit?.toString() || '',
         usageTiered: item.pricing.usageTiered
@@ -382,7 +402,7 @@ function mapPriceToForm(price: ModelPrice): PriceFormData['prices'][number]['pri
             items: o.items.map((item) => ({
               itemCode: item.itemCode,
               pricing: {
-                mode: item.pricing.mode,
+                mode: item.pricing.mode ?? '',
                 flatFee: item.pricing.flatFee?.toString() || '',
                 usagePerUnit: item.pricing.usagePerUnit?.toString() || '',
                 usageTiered: item.pricing.usageTiered
@@ -584,13 +604,7 @@ const PriceCard = memo(function PriceCard({
           </div>
 
           <div className='hidden items-start justify-end md:flex'>
-            <Button
-              type='button'
-              variant='ghost'
-              size='icon-sm'
-              className='text-destructive'
-              onClick={() => onRemovePrice(priceIndex)}
-            >
+            <Button type='button' variant='ghost' size='icon-sm' className='text-destructive' onClick={() => onRemovePrice(priceIndex)}>
               <IconTrash size={16} />
             </Button>
           </div>
@@ -738,7 +752,7 @@ export function ChannelsModelPriceDialog() {
   const [selectedProviderId, setSelectedProviderId] = useState<string>('');
   const [selectedModelId, setSelectedModelId] = useState<string>('');
   const [multiplier, setMultiplier] = useState<number>(1);
-  const [exchangeRate, setExchangeRate] = useState<number>(DEFAULT_EXCHANGE_RATE);
+  const [exchangeRate, setExchangeRate] = useState<number>(FALLBACK_EXCHANGE_RATE);
 
   useEffect(() => {
     if (!isOpen || !providersData) return;
@@ -748,13 +762,21 @@ export function ChannelsModelPriceDialog() {
     setMultiplier(1);
   }, [defaultProviderId, isOpen, providersData]);
 
-  // Reset the exchange rate only when the dialog opens. A separate effect keeps
-  // late-arriving provider data from overwriting a rate the user already typed.
+  // Read once per open so a late catalog response preserves the user's current input.
   useEffect(() => {
     if (isOpen) {
-      setExchangeRate(DEFAULT_EXCHANGE_RATE);
+      setExchangeRate(readDefaultExchangeRate());
     }
   }, [isOpen]);
+
+  function saveDefaultExchangeRate() {
+    try {
+      localStorage.setItem(EXCHANGE_RATE_STORAGE_KEY, JSON.stringify(exchangeRate));
+      toast.success(t('price.apply.defaultExchangeRateSaved', { rate: exchangeRate }));
+    } catch {
+      toast.error(t('price.apply.defaultExchangeRateSaveFailed'));
+    }
+  }
 
   const providerModels = useMemo(() => {
     if (!selectedProviderId || !providersData) return [];
@@ -808,7 +830,11 @@ export function ChannelsModelPriceDialog() {
     const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
-    const safeName = currentRow.name.trim().replace(/[^\p{L}\p{N}._-]+/gu, '-').replace(/^-+|-+$/g, '') || 'channel';
+    const safeName =
+      currentRow.name
+        .trim()
+        .replace(/[^\p{L}\p{N}._-]+/gu, '-')
+        .replace(/^-+|-+$/g, '') || 'channel';
     anchor.href = url;
     anchor.download = `${safeName}-model-prices.json`;
     document.body.appendChild(anchor);
@@ -889,9 +915,7 @@ export function ChannelsModelPriceDialog() {
       // so scroll it into view before surfacing the error message.
       const priceErrors = errors?.prices;
       if (Array.isArray(priceErrors)) {
-        const firstIndex = priceErrors.findIndex(
-          (e) => e && typeof e === 'object' && Object.keys(e).length > 0
-        );
+        const firstIndex = priceErrors.findIndex((e) => e && typeof e === 'object' && Object.keys(e).length > 0);
         if (firstIndex >= 0) {
           rowVirtualizer.scrollToIndex(firstIndex, { align: 'start' });
         }
@@ -1065,8 +1089,7 @@ export function ChannelsModelPriceDialog() {
   const onModelSelected = useCallback(
     (priceIndex: number, modelId: string) => {
       if (!modelId || !providersData) return;
-      const preferredProviderId =
-        defaultProviderId && providersData.providers[defaultProviderId] ? defaultProviderId : selectedProviderId;
+      const preferredProviderId = defaultProviderId && providersData.providers[defaultProviderId] ? defaultProviderId : selectedProviderId;
       const found = findProviderModelById(providersData, modelId, preferredProviderId);
       if (!found) return;
       applyProviderModelToIndex(priceIndex, found.model);
@@ -1175,11 +1198,9 @@ export function ChannelsModelPriceDialog() {
           <form onSubmit={form.handleSubmit(onSubmit, onSubmitError)} className='flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden'>
             <Card className='mb-4 max-h-[15vh] shrink-0 overflow-y-auto md:max-h-none md:overflow-visible'>
               <CardContent className='pt-0 md:pt-4'>
-                <div className='mb-3 text-xs text-muted-foreground'>
-                  {t('price.apply.usdHint')}
-                </div>
-                <div className='grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_80px_80px_auto] md:items-end'>
-                  <div className='min-w-0'>
+                <div className='text-muted-foreground mb-3 text-xs'>{t('price.apply.usdHint')}</div>
+                <div className='grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_80px_auto_auto] md:items-end'>
+                  <div className='min-w-0' data-testid='price-provider'>
                     <FormLabel className='text-sm'>{t('price.apply.provider')}</FormLabel>
                     <AutoCompleteSelect
                       selectedValue={selectedProviderId}
@@ -1221,15 +1242,31 @@ export function ChannelsModelPriceDialog() {
                     />
                   </div>
                   <div className='min-w-0'>
-                    <FormLabel className='text-sm'>{t('price.apply.exchangeRate')}</FormLabel>
-                    <Input
-                      type='number'
-                      value={exchangeRate}
-                      onChange={(e) => setExchangeRate(parseFloat(e.target.value) || 0)}
-                      className='h-8'
-                      step='any'
-                      min='0'
-                    />
+                    <FormLabel htmlFor='channel-price-exchange-rate' className='text-sm'>
+                      {t('price.apply.exchangeRate')}
+                    </FormLabel>
+                    <div className='flex items-center gap-1'>
+                      <Input
+                        id='channel-price-exchange-rate'
+                        data-testid='price-exchange-rate'
+                        type='number'
+                        value={exchangeRate}
+                        onChange={(e) => setExchangeRate(parseFloat(e.target.value) || 0)}
+                        className='h-8 md:w-20'
+                        step='any'
+                        min='0'
+                      />
+                      <Button
+                        type='button'
+                        variant='outline'
+                        size='sm'
+                        data-testid='price-set-default-exchange-rate'
+                        disabled={!isValidDefaultExchangeRate(exchangeRate)}
+                        onClick={saveDefaultExchangeRate}
+                      >
+                        {t('price.apply.setDefaultExchangeRate')}
+                      </Button>
+                    </div>
                   </div>
                   <div className='flex gap-2'>
                     <Button
@@ -1286,11 +1323,7 @@ export function ChannelsModelPriceDialog() {
                 </div>
               </CardContent>
             </Card>
-            <div
-              ref={priceListRef}
-              data-testid='price-list'
-              className='min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden pt-4 pr-4'
-            >
+            <div ref={priceListRef} data-testid='price-list' className='min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto pt-4 pr-4'>
               {fields.length === 0 && !isLoading && (
                 <div className='text-muted-foreground flex flex-col items-center justify-center py-12'>
                   <p>{t('price.noPrices')}</p>

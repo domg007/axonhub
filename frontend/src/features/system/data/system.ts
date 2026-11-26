@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { graphqlRequest, GraphQLRequestError } from '@/gql/graphql';
+import { GRAPHQL_ENDPOINT, graphqlRequest, GraphQLRequestError } from '@/gql/graphql';
 import { toast } from 'sonner';
 import { getTokenFromStorage, useAuthStore } from '@/stores/authStore';
 import i18n from '@/lib/i18n';
@@ -1318,7 +1318,7 @@ export function useRestore() {
       formData.append('0', file);
 
       const token = getTokenFromStorage();
-      const response = await fetch('/admin/graphql', {
+      const response = await fetch(GRAPHQL_ENDPOINT, {
         method: 'POST',
         headers: {
           Authorization: token ? `Bearer ${token}` : '',
@@ -1942,6 +1942,7 @@ export function useUpdateCatalogSettings() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['catalogSettings'] });
       queryClient.invalidateQueries({ queryKey: ['providers-catalog'] });
+      queryClient.invalidateQueries({ queryKey: ['catalog-import'] });
       toast.success(i18n.t('common.success.systemUpdated'));
     },
     onError: () => {

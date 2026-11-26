@@ -200,10 +200,20 @@ export const apiKeyAutoDisableRuleFormSchema = apiKeyAutoDisableRuleSchema
     path: ['disableUntilCron'],
   });
 
+export const channelScheduledDisableSchema = z.object({
+  disableCron: z.string(),
+  disableTimezone: z.string().nullable().optional(),
+  reenableMode: z.string().nullable().optional(),
+  reenableCron: z.string().nullable().optional(),
+  reenableTimezone: z.string().nullable().optional(),
+});
+export type ChannelScheduledDisable = z.infer<typeof channelScheduledDisableSchema>;
+
 export const channelPoliciesSchema = z.object({
   stream: capabilityPolicySchema.optional(),
   apiKeyAutoDisableMode: z.preprocess(coerceApiKeyAutoDisableMode, apiKeyAutoDisableModeSchema.optional().nullable()),
   apiKeyAutoDisableRules: z.array(apiKeyAutoDisableRuleSchema).optional().nullable(),
+  scheduledDisable: channelScheduledDisableSchema.optional().nullable(),
 });
 export type ChannelPolicies = z.infer<typeof channelPoliciesSchema>;
 
@@ -265,6 +275,7 @@ export type ReasoningEffortMapping = z.infer<typeof reasoningEffortMappingSchema
 export const transformOptionsSchema = z.object({
   forceArrayInstructions: z.boolean().optional(),
   forceArrayInputs: z.boolean().optional(),
+  forceArrayStop: z.boolean().optional(),
   replaceDeveloperRoleWithSystem: z.boolean().optional(),
   reasoningEffortMapping: z.array(reasoningEffortMappingSchema).nullish(),
 });
@@ -367,6 +378,7 @@ export const channelSettingsSchema = z.object({
   hideOriginalModels: z.boolean().optional(),
   hideMappedModels: z.boolean().optional(),
   lowercaseModelId: z.boolean().optional(),
+  syncModelPrices: z.boolean().optional(),
   bodyOverrideOperations: z.array(overrideOperationSchema).optional(),
   headerOverrideOperations: z.array(overrideOperationSchema).optional(),
   proxy: proxyConfigSchema.optional().nullable(),
@@ -410,6 +422,7 @@ export type ChannelModelEntry = z.infer<typeof channelModelEntrySchema>;
 
 // Channel Credentials
 export const channelCredentialsSchema = z.object({
+  isOAuth: z.boolean().optional(),
   apiKey: z.string().optional().nullable(),
   apiKeys: z.array(z.string()).optional().nullable(),
   // Read-side shape only: persisted credentials are echoed for the form and may
@@ -468,6 +481,9 @@ export const disabledAPIKeySchema = z.object({
   errorCode: z.number(),
   reason: z.string().optional().nullable(),
   expiresAt: z.string().optional().nullable(),
+  // True when a proactive provider quota observation owns the disable. Missing
+  // means a manual, plugin or HTTP-rule disable (every pre-upgrade record).
+  quotaDisabled: z.boolean().optional().default(false),
 });
 export type DisabledAPIKey = z.infer<typeof disabledAPIKeySchema>;
 
@@ -552,12 +568,43 @@ export const tieredPricingSchema = z.object({
 });
 export type TieredPricing = z.infer<typeof tieredPricingSchema>;
 
-export const pricingSchema = z.object({
-  mode: pricingModeSchema,
+// Pricing.mode on the wire is a non-null enum; the empty string is what the backend
+// emits for a variant-only aggregate pricing (see modelPriceItemSchema). null/undefined
+// are accepted too so hand-built prices still parse.
+export const pricingModeValueSchema = z
+  .union([pricingModeSchema, z.literal('')])
+  .nullable()
+  .optional();
+
+const pricingShapeSchema = z.object({
+  mode: pricingModeValueSchema,
   flatFee: z.union([z.string(), z.number()]).nullable().optional(),
   usagePerUnit: z.union([z.string(), z.number()]).nullable().optional(),
   usageTiered: tieredPricingSchema.nullable().optional(),
 });
+
+// Validates the fields of a known mode. An empty/absent mode is skipped here;
+// modelPriceItemSchema decides when that is legal for the aggregate pricing.
+const validateKnownPricingMode = (pricing: z.infer<typeof pricingShapeSchema>, path: PropertyKey[], ctx: z.RefinementCtx) => {
+  if (!pricing.mode) return;
+  if (pricing.mode === 'flat_fee' && pricing.flatFee == null) {
+    ctx.addIssue({ code: 'custom', message: 'flatFee is required', path: [...path, 'flatFee'] });
+  } else if (pricing.mode === 'usage_per_unit' && pricing.usagePerUnit == null) {
+    ctx.addIssue({ code: 'custom', message: 'usagePerUnit is required', path: [...path, 'usagePerUnit'] });
+  } else if ((pricing.mode === 'usage_tiered' || pricing.mode === 'usage_volume') && !pricing.usageTiered) {
+    ctx.addIssue({ code: 'custom', message: 'usageTiered is required', path: [...path, 'usageTiered'] });
+  }
+};
+
+// Strict pricing: variants must always carry a real mode, so the enum stays non-optional.
+export const pricingSchema = z
+  .object({
+    mode: pricingModeSchema,
+    flatFee: z.union([z.string(), z.number()]).nullable().optional(),
+    usagePerUnit: z.union([z.string(), z.number()]).nullable().optional(),
+    usageTiered: tieredPricingSchema.nullable().optional(),
+  })
+  .superRefine((pricing, ctx) => validateKnownPricingMode(pricing, [], ctx));
 export type Pricing = z.infer<typeof pricingSchema>;
 
 export const promptWriteCacheVariantSchema = z.object({
@@ -566,11 +613,25 @@ export const promptWriteCacheVariantSchema = z.object({
 });
 export type PromptWriteCacheVariant = z.infer<typeof promptWriteCacheVariantSchema>;
 
-export const modelPriceItemSchema = z.object({
-  itemCode: priceItemCodeSchema,
-  pricing: pricingSchema,
-  promptWriteCacheVariants: z.array(promptWriteCacheVariantSchema).nullable().optional(),
-});
+// An empty mode is only legal on the aggregate pricing of cache-write items whose
+// 5m/1h variants carry the rates: when both TTLs exist, no single aggregate rate is a
+// safe fallback, so the variants are the only source of truth. GQL carries this as the
+// empty string because Pricing.mode is a non-null enum; null/undefined are accepted too
+// so hand-built prices still parse.
+export const modelPriceItemSchema = z
+  .object({
+    itemCode: priceItemCodeSchema,
+    pricing: pricingShapeSchema,
+    promptWriteCacheVariants: z.array(promptWriteCacheVariantSchema).nullable().optional(),
+  })
+  .superRefine((item, ctx) => {
+    validateKnownPricingMode(item.pricing, ['pricing'], ctx);
+    if (item.pricing.mode) return;
+    const hasVariants = (item.promptWriteCacheVariants ?? []).length > 0;
+    if (item.itemCode !== 'prompt_write_cached_tokens' || !hasVariants) {
+      ctx.addIssue({ code: 'custom', message: 'mode is required', path: ['pricing', 'mode'] });
+    }
+  });
 export type ModelPriceItem = z.infer<typeof modelPriceItemSchema>;
 
 // Time-based price schedule schemas
@@ -658,11 +719,11 @@ function validateOAuthCredentials(type: string, apiKey: string | undefined, ctx:
     return;
   }
 
-  // GitHub Copilot only requires access_token, others may require refresh_token
+  // Copilot and Claude Code can also use access-only credentials.
   const parsed = z
     .object({
       access_token: z.string().min(1),
-      refresh_token: isCopilot ? z.string().optional() : z.string().min(1),
+      refresh_token: isCopilot || type === 'claudecode' ? z.string().optional() : z.string().min(1),
     })
     .safeParse(json);
 
@@ -790,7 +851,7 @@ export const createChannelInputSchema = z
     const hasApiKeys = data.credentials.apiKeys && data.credentials.apiKeys.some((k) => k.trim().length > 0);
     const isOAuthType =
       (data.type === 'codex' && !hasApiKeys) ||
-      data.type === 'claudecode' ||
+      (data.type === 'claudecode' && !hasApiKeys) ||
       data.type === 'antigravity' ||
       data.type === 'github_copilot' ||
       data.type === 'xai_subscription';
@@ -806,13 +867,7 @@ export const createChannelInputSchema = z
 
     // Validate that at least one credential type is provided. A Vertex key only counts
     // on a gemini_vertex channel, so it must not satisfy an ordinary channel.
-    if (
-      !hasApiKey &&
-      !hasApiKeys &&
-      data.type !== 'anthropic_aws' &&
-      data.type !== 'anthropic_gcp' &&
-      data.type !== 'gemini_vertex'
-    ) {
+    if (!hasApiKey && !hasApiKeys && data.type !== 'anthropic_aws' && data.type !== 'anthropic_gcp' && data.type !== 'gemini_vertex') {
       ctx.addIssue({
         code: 'custom' as const,
         message: 'At least one API Key is required',
@@ -903,7 +958,7 @@ export const updateChannelInputSchema = z
     // (which indicates OAuth credentials are being set)
     const isOAuthType =
       (effectiveType === 'codex' && !hasApiKeys) ||
-      effectiveType === 'claudecode' ||
+      (effectiveType === 'claudecode' && !hasApiKeys) ||
       effectiveType === 'antigravity' ||
       effectiveType === 'github_copilot' ||
       effectiveType === 'xai_subscription';
@@ -920,9 +975,9 @@ export const updateChannelInputSchema = z
 
     // If we have an OAuth key but no type, check if it looks like Copilot credentials
     const isCopilotKey = hasApiKey && data.credentials?.apiKey?.trim().startsWith('{');
-    const isThirdPartyCodex = effectiveType === 'codex' && hasApiKeys;
+    const usesThirdPartyKeys = (effectiveType === 'codex' || effectiveType === 'claudecode') && hasApiKeys;
 
-    if (!isThirdPartyCodex && (isOAuthType || derivedType === 'github_copilot' || isCopilotKey)) {
+    if (!usesThirdPartyKeys && (isOAuthType || derivedType === 'github_copilot' || isCopilotKey)) {
       if (isCopilotKey && !derivedType) {
         try {
           const parsed = JSON.parse(data.credentials.apiKey);

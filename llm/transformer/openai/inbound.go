@@ -152,20 +152,26 @@ func (t *InboundTransformer) TransformStreamChunk(
 // This is a helper function to filter out reasoning signature events when transforming
 // to OpenAI format, since OpenAI format doesn't support ReasoningSignature in streaming.
 // If the response contains ONLY ReasoningSignature (pure signature event), we skip it.
-// If the chunk also contains other content (text, reasoning_content, tool_calls, etc.),
-// we should NOT skip it (e.g., thinking chunks with both signature and content).
+// Chunks that also carry text, tool calls, a finish reason, or usage stay, because
+// those fields have no other carrier. The signature itself is not written back.
 func isReasoningSignatureEvent(resp *llm.Response) bool {
 	if len(resp.Choices) != 1 {
 		return false
 	}
 
-	delta := resp.Choices[0].Delta
-	if delta == nil {
+	choice := resp.Choices[0]
+	delta := choice.Delta
+	if delta == nil || delta.ReasoningSignature == nil || *delta.ReasoningSignature == "" {
 		return false
 	}
 
-	// Check if ReasoningSignature is set
-	if delta.ReasoningSignature == nil || *delta.ReasoningSignature == "" {
+	// Gemini and Copilot can carry signatures on the terminal chunk.
+	if finish := choice.FinishReason; finish != nil && *finish != "" {
+		return false
+	}
+	// Keep usage that can be returned to the client. An all-zero placeholder
+	// adds nothing to a signature-only chunk.
+	if usage := UsageFromLLM(resp.Usage); usage != nil && *usage != (Usage{}) {
 		return false
 	}
 

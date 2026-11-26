@@ -112,6 +112,12 @@ type TransformOptions struct {
 	// ForceArrayInputs forces the channel to accept array format for inputs.
 	ForceArrayInputs bool `json:"forceArrayInputs"`
 
+	// ForceArrayStop forces the outbound stop field to always be an array.
+	// OpenAI allows both "stop": "x" and "stop": ["x"], but some strict
+	// OpenAI-compatible upstreams only accept the array form and reject a
+	// plain string with HTTP 400.
+	ForceArrayStop bool `json:"forceArrayStop"`
+
 	// ReplaceDeveloperRoleWithSystem replaces developer role with system in messages for Bailian compatibility.
 	ReplaceDeveloperRoleWithSystem bool `json:"replaceDeveloperRoleWithSystem"`
 
@@ -211,6 +217,9 @@ type ChannelSettings struct {
 
 	// TransformOptions configures the transform options for the channel.
 	TransformOptions TransformOptions `json:"transformOptions"`
+
+	// SyncModelPrices opts into overwriting saved channel prices, including manual edits, with endpoint prices for every listed model.
+	SyncModelPrices bool `json:"syncModelPrices,omitempty"`
 
 	// PassThroughUserAgent controls whether to pass through the original User-Agent header to upstream AI providers.
 	// When set to nil, it inherits from the global system setting.
@@ -465,6 +474,14 @@ type DisabledAPIKey struct {
 	ErrorCode  int        `json:"errorCode"`
 	Reason     string     `json:"reason,omitempty"`
 	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
+
+	// QuotaDisabled marks a disable owned by a proactive provider quota
+	// observation rather than by a manual action, a plugin or an HTTP error
+	// rule. Only records with this flag are reconciled by quota checks;
+	// missing/false — including every record written before the field existed
+	// — means the channel lifecycle owns the record. Ownership is never
+	// inferred from the reason text, the error code or the expiry.
+	QuotaDisabled bool `json:"quotaDisabled,omitempty"`
 }
 
 // IsExpired reports whether a temporary API key disable has elapsed.
@@ -723,6 +740,32 @@ type ChannelPolicies struct {
 	// evaluated before the global retry policy when the mode is custom, and the
 	// first match owns the failure. Unmatched custom failures fall back to global.
 	APIKeyAutoDisableRules []APIKeyAutoDisableRule `json:"apiKeyAutoDisableRules,omitempty"`
+
+	// ScheduledDisable is an operator-configured wall-clock off/on schedule.
+	// Independent of APIKeyAutoDisableRules: a disabled channel is never
+	// evaluated for failure rules, so the two mechanisms do not interact.
+	ScheduledDisable *ChannelScheduledDisable `json:"scheduledDisable,omitempty"`
+}
+
+// ChannelScheduledDisable configures a wall-clock schedule that disables the
+// channel on disableCron and, when a re-enable is configured, re-enables it.
+// Empty timezone means UTC. The disable cron is the only required field:
+// without a re-enable the channel stays disabled until an operator re-enables
+// it.
+//
+// ReenableMode selects the re-enable behavior:
+//   - "" (default): no automatic re-enable.
+//   - "cron": re-enable at the first ReenableCron occurrence after the disable.
+//   - "opposite": re-enable one hour after the last consecutive matching
+//     minute of DisableCron — i.e. when the schedule's off window ends. A cron
+//     that matches every minute has no off window, so the channel stays
+//     disabled. Re-enableCron/ReenableTimezone are ignored in this mode.
+type ChannelScheduledDisable struct {
+	DisableCron      string `json:"disableCron"`
+	DisableTimezone  string `json:"disableTimezone,omitempty"`
+	ReenableMode     string `json:"reenableMode,omitempty"`
+	ReenableCron     string `json:"reenableCron,omitempty"`
+	ReenableTimezone string `json:"reenableTimezone,omitempty"`
 }
 
 // EffectiveAutoDisableMode returns the mode used at evaluation time.

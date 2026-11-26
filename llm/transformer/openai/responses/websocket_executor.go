@@ -8,17 +8,23 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/gorilla/websocket"
+	"github.com/coder/websocket"
 
+	"github.com/looplj/axonhub/llm"
 	"github.com/looplj/axonhub/llm/httpclient"
+	"github.com/looplj/axonhub/llm/internal/pkg/xjson"
 	"github.com/looplj/axonhub/llm/pipeline"
 	"github.com/looplj/axonhub/llm/streams"
 	"github.com/looplj/axonhub/llm/transformer/shared"
@@ -47,8 +53,8 @@ const (
 )
 
 type WebSocketExecutor struct {
-	inner  pipeline.Executor
-	dialer *websocket.Dialer
+	inner     pipeline.Executor
+	transport *http.Transport
 
 	mu               sync.Mutex
 	pool             map[webSocketPoolKey]*pooledWebSocketConn
@@ -64,23 +70,23 @@ type WebSocketExecutor struct {
 }
 
 func NewWebSocketExecutor(inner pipeline.Executor) *WebSocketExecutor {
-	dialer := &websocket.Dialer{
-		HandshakeTimeout: 30 * time.Second,
-		Proxy:            http.ProxyFromEnvironment,
+	transport := &http.Transport{
+		Proxy:               http.ProxyFromEnvironment,
+		TLSHandshakeTimeout: 30 * time.Second,
 	}
 	if hc, ok := inner.(*httpclient.HttpClient); ok {
-		dialer.Proxy = hc.ProxyFunc()
+		transport.Proxy = hc.ProxyFunc()
 		if native := hc.GetNativeClient(); native != nil {
-			if transport, ok := native.Transport.(*http.Transport); ok && transport.TLSClientConfig != nil {
-				dialer.TLSClientConfig = transport.TLSClientConfig.Clone()
-				dialer.TLSClientConfig.NextProtos = []string{"http/1.1"}
+			if source, ok := native.Transport.(*http.Transport); ok && source.TLSClientConfig != nil {
+				transport.TLSClientConfig = source.TLSClientConfig.Clone()
+				transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
 			}
 		}
 	}
 
 	return &WebSocketExecutor{
 		inner:            inner,
-		dialer:           dialer,
+		transport:        transport,
 		pool:             map[webSocketPoolKey]*pooledWebSocketConn{},
 		idleTTL:          defaultWebSocketIdleTTL,
 		maxLifetime:      defaultWebSocketMaxLifetime,
@@ -137,78 +143,214 @@ func (e *WebSocketExecutor) Do(ctx context.Context, request *httpclient.Request)
 }
 
 // TopLevelWebSocketError returns an error when collected WebSocket stream events contain a top-level protocol error.
+//
+// A top-level `error` frame means the upstream failed, not the request. Report
+// it as a *httpclient.Error so the orchestrator can retry the channel, and keep
+// the frame's own status, code and message: a frame that fails strict decoding
+// must still surface the provider's reason instead of a bare constant.
 func TopLevelWebSocketError(chunks []*httpclient.StreamEvent) error {
 	for _, chunk := range chunks {
 		if chunk == nil || chunk.Type != string(StreamEventTypeError) {
 			continue
 		}
 
-		var event struct {
-			Status  int             `json:"status"`
-			Code    string          `json:"code"`
-			Message string          `json:"message"`
-			Param   string          `json:"param"`
-			Error   json.RawMessage `json:"error"`
-		}
-		if err := json.Unmarshal(chunk.Data, &event); err != nil {
-			return fmt.Errorf("websocket error event")
-		}
-		if event.Status >= http.StatusBadRequest && event.Status <= 599 {
-			detail := map[string]any{}
-			if event.Message != "" {
-				detail["message"] = event.Message
-			}
-			if event.Code != "" {
-				detail["type"] = event.Code
-				detail["code"] = event.Code
-			}
-			if event.Param != "" {
-				detail["param"] = event.Param
-			}
-			if len(event.Error) > 0 && string(event.Error) != "null" {
-				var nested map[string]any
-				if err := json.Unmarshal(event.Error, &nested); err != nil {
-					return fmt.Errorf("failed to decode websocket error detail: %w", err)
-				}
-				for key, value := range nested {
-					if value == nil {
-						continue
-					}
-					if text, ok := value.(string); ok && text == "" {
-						continue
-					}
-					detail[key] = value
-				}
-			}
-			body, err := json.Marshal(struct {
-				Error map[string]any `json:"error"`
-			}{Error: detail})
-			if err != nil {
-				return fmt.Errorf("failed to encode websocket error response: %w", err)
-			}
-
-			return &httpclient.Error{
-				StatusCode: event.Status,
-				Status:     http.StatusText(event.Status),
-				Body:       body,
-			}
-		}
-		if event.Code != "" && event.Message != "" {
-			return fmt.Errorf("websocket error event: %s: %s", event.Code, event.Message)
-		}
-		if event.Message != "" {
-			return fmt.Errorf("websocket error event: %s", event.Message)
-		}
-		if event.Code != "" {
-			return fmt.Errorf("websocket error event: %s", event.Code)
-		}
-
-		return fmt.Errorf("websocket error event")
+		return newWebSocketErrorEvent(chunk.Data)
 	}
 
 	return nil
 }
 
+// webSocketErrorFrameMaxBytes bounds the raw frame copied into an error body;
+// a pathological provider must not inflate every retry response.
+const webSocketErrorFrameMaxBytes = 4 << 10
+
+// newWebSocketErrorEvent converts a top-level error frame into an upstream
+// error. A frame without a usable 4xx/5xx status becomes 502: the orchestrator
+// treats 502 as retryable, so one broken connection cannot fail every request
+// for the whole window.
+func newWebSocketErrorEvent(raw []byte) *httpclient.Error {
+	status, detail := webSocketErrorEventDetail(raw)
+
+	return &httpclient.Error{
+		StatusCode: status,
+		Status:     http.StatusText(status),
+		Body: xjson.MustMarshal(struct {
+			Error map[string]string `json:"error"`
+		}{Error: detail}),
+	}
+}
+
+// newErrorEventResponseError converts a top-level Responses error frame into
+// the unified streaming error. eventType is the transport-declared event name,
+// which still identifies the frame when the payload cannot be decoded: a
+// receiver that cannot parse the frame's JSON reports an empty type, and a
+// malformed frame whose payload unambiguously starts an `error` frame must
+// still surface the provider's reason. A frame without a usable 4xx/5xx
+// status becomes 502, the same retryable classification the non-streaming
+// path uses.
+func newErrorEventResponseError(raw []byte, eventType string) *llm.ResponseError {
+	if eventType != string(StreamEventTypeError) && !isErrorFrameCandidate(raw) {
+		return nil
+	}
+
+	status, detail := webSocketErrorEventDetail(raw)
+
+	return &llm.ResponseError{
+		StatusCode: status,
+		Detail: llm.ErrorDetail{
+			Message: detail["message"],
+			Type:    detail["type"],
+			Code:    detail["code"],
+			Param:   detail["param"],
+		},
+	}
+}
+
+// isErrorFrameCandidate reports whether raw can be classified as a top-level
+// error frame. Fully decodable frames are classified by their type field;
+// malformed frames by the frame prefix that the receiver itself could not
+// parse. Anything else is left to the generic decode error so non-error
+// frames keep their existing behavior.
+func isErrorFrameCandidate(raw []byte) bool {
+	var frame struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(raw, &frame); err == nil {
+		return frame.Type == string(StreamEventTypeError)
+	}
+
+	return strings.HasPrefix(strings.TrimSpace(string(raw)), `{"type":"error"`)
+}
+
+// webSocketErrorEventDetail extracts what the provider reported. Providers
+// disagree on the frame shape: `status` may be a number or a string, and
+// `code`/`message`/`param` may sit on the frame or inside `error`. Values are
+// normalized to strings so inbound transformers can decode the body into their
+// error detail without a second failure.
+func webSocketErrorEventDetail(raw []byte) (int, map[string]string) {
+	detail := map[string]string{}
+
+	var frame map[string]any
+	if err := json.Unmarshal(raw, &frame); err != nil {
+		detail["message"] = fmt.Sprintf("websocket error event: failed to decode error frame: %s; body: %s", err, truncateWebSocketErrorFrame(raw))
+		detail["type"] = "upstream_error"
+
+		return http.StatusBadGateway, detail
+	}
+
+	status, ok := webSocketErrorStatus(frame["status"])
+	if !ok {
+		status = http.StatusBadGateway
+	}
+
+	setWebSocketErrorText(detail, "message", frame["message"])
+	setWebSocketErrorText(detail, "code", frame["code"])
+	setWebSocketErrorText(detail, "param", frame["param"])
+
+	if nested, ok := frame["error"].(map[string]any); ok {
+		for _, key := range []string{"message", "code", "type", "param"} {
+			setWebSocketErrorText(detail, key, nested[key])
+		}
+
+		for key, value := range nested {
+			if _, ok := detail[key]; ok {
+				continue
+			}
+			if text := webSocketErrorText(value); text != "" {
+				detail[key] = text
+			}
+		}
+	} else if text := webSocketErrorText(frame["error"]); text != "" {
+		detail["message"] = text
+	}
+
+	if detail["message"] == "" {
+		detail["message"] = detail["code"]
+	}
+	if detail["message"] == "" {
+		detail["message"] = "websocket error event: " + truncateWebSocketErrorFrame(raw)
+	}
+	if detail["type"] == "" {
+		detail["type"] = webSocketErrorTypeFromCode(detail["code"])
+	}
+	if detail["type"] == "" {
+		detail["type"] = "upstream_error"
+	}
+
+	return status, detail
+}
+
+func setWebSocketErrorText(detail map[string]string, key string, value any) {
+	if text := webSocketErrorText(value); text != "" {
+		detail[key] = text
+	}
+}
+
+// webSocketErrorTypeFromCode keeps the historical "code doubles as type" shape
+// for symbolic codes. A numeric code is an HTTP status, not an error type, so
+// it must not be copied into `error.type`.
+func webSocketErrorTypeFromCode(code string) string {
+	if code == "" {
+		return ""
+	}
+
+	for _, r := range code {
+		if r < '0' || r > '9' {
+			return code
+		}
+	}
+
+	return ""
+}
+
+func webSocketErrorText(value any) string {
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case float64:
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(v)
+	default:
+		return ""
+	}
+}
+
+func webSocketErrorStatus(value any) (int, bool) {
+	switch v := value.(type) {
+	case float64:
+		if v != math.Trunc(v) {
+			return 0, false
+		}
+
+		status := int(v)
+		if status >= http.StatusBadRequest && status <= 599 {
+			return status, true
+		}
+	case string:
+		status, err := strconv.Atoi(strings.TrimSpace(v))
+		if err == nil && status >= http.StatusBadRequest && status <= 599 {
+			return status, true
+		}
+	}
+
+	return 0, false
+}
+
+func truncateWebSocketErrorFrame(raw []byte) string {
+	text := strings.TrimSpace(string(raw))
+	if len(text) <= webSocketErrorFrameMaxBytes {
+		return text
+	}
+
+	return fmt.Sprintf("%s... (%d bytes truncated)",
+		strings.ToValidUTF8(text[:webSocketErrorFrameMaxBytes], ""),
+		len(text)-webSocketErrorFrameMaxBytes)
+}
+
+// DoStream sends response.create on an exclusive connection lease and transfers
+// its ownership to the returned stream. Idle timing excludes pooled lease waits
+// and pauses between the consumer's calls to Next.
 func (e *WebSocketExecutor) DoStream(ctx context.Context, request *httpclient.Request) (streams.Stream[*httpclient.StreamEvent], error) {
 	if request == nil {
 		return nil, fmt.Errorf("request is nil")
@@ -246,8 +388,22 @@ func (e *WebSocketExecutor) DoStream(ctx context.Context, request *httpclient.Re
 
 	lease, err := e.acquirePreparedLease(ctx, request, wsURL, headers, payload)
 	if err != nil {
+		if cause := httpclient.StreamContextError(ctx); cause != nil {
+			err = cause
+		}
 		return nil, err
 	}
+	// Waiting for another request's pooled lease is local queueing. Start
+	// inactivity tracking only once this request can write upstream.
+	parentCtx := ctx
+	ctx, activity, stopIdle := httpclient.NewStreamIdleContext(ctx)
+	streamOwned := false
+	defer func() {
+		if !streamOwned {
+			stopIdle()
+		}
+	}()
+	setWebSocketActivity(lease.activityConn, activity)
 
 	if err := lease.write(ctx, payload); err != nil {
 		// A write failure is ambiguous: the upstream may already have accepted and
@@ -256,11 +412,21 @@ func (e *WebSocketExecutor) DoStream(ctx context.Context, request *httpclient.Re
 		// for the caller to decide.
 		lease.release(true)
 
+		if cause := httpclient.StreamContextError(ctx); cause != nil {
+			err = cause
+		}
 		return nil, fmt.Errorf("failed to write response.create websocket event: %w", err)
 	}
 
-	stream := &webSocketStream{ctx: ctx, lease: lease, done: make(chan struct{})}
+	httpclient.SetStreamIdleWaiting(ctx, false)
+	stream := &webSocketStream{ctx: ctx, parentCtx: parentCtx, lease: lease, done: make(chan struct{}), stopIdle: stopIdle}
+	streamOwned = true
 	go func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				slog.ErrorContext(ctx, "websocket cancellation watcher panicked", slog.Any("panic", recovered))
+			}
+		}()
 		select {
 		case <-ctx.Done():
 			_ = stream.Close()
@@ -327,12 +493,13 @@ type webSocketPoolKey struct {
 }
 
 type pooledWebSocketConn struct {
-	key        webSocketPoolKey
-	conn       *websocket.Conn
-	inFlight   chan struct{}
-	createdAt  time.Time
-	lastUsedAt time.Time
-	used       bool
+	key          webSocketPoolKey
+	conn         *websocket.Conn
+	activityConn *webSocketActivityConn
+	inFlight     chan struct{}
+	createdAt    time.Time
+	lastUsedAt   time.Time
+	used         bool
 
 	mu             sync.Mutex
 	closed         bool
@@ -347,6 +514,7 @@ type pooledWebSocketConn struct {
 
 type webSocketLease struct {
 	conn          *websocket.Conn
+	activityConn  *webSocketActivityConn
 	owner         *WebSocketExecutor
 	pooled        *pooledWebSocketConn
 	reused        bool
@@ -428,11 +596,11 @@ func restorePayloadMap(payload, original map[string]any) {
 func (e *WebSocketExecutor) acquire(ctx context.Context, request *httpclient.Request, wsURL string, headers http.Header) (*webSocketLease, error) {
 	key, ok := e.poolKey(ctx, request, wsURL, headers)
 	if !ok {
-		conn, err := e.dial(ctx, request, wsURL, headers)
+		conn, activityConn, err := e.dial(ctx, request, wsURL, headers)
 		if err != nil {
 			return nil, err
 		}
-		return &webSocketLease{conn: conn}, nil
+		return &webSocketLease{conn: conn, activityConn: activityConn}, nil
 	}
 
 	for {
@@ -449,7 +617,7 @@ func (e *WebSocketExecutor) acquire(ctx context.Context, request *httpclient.Req
 				e.evict(pc)
 				continue
 			}
-			return &webSocketLease{conn: pc.conn, owner: e, pooled: pc, reused: used, generation: pc.generation}, nil
+			return &webSocketLease{conn: pc.conn, activityConn: pc.activityConn, owner: e, pooled: pc, reused: used, generation: pc.generation}, nil
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -470,28 +638,29 @@ func (e *WebSocketExecutor) getOrDialPooled(ctx context.Context, request *httpcl
 	}
 	e.mu.Unlock()
 
-	conn, err := e.dial(ctx, request, wsURL, headers)
+	conn, activityConn, err := e.dial(ctx, request, wsURL, headers)
 	if err != nil {
 		return nil, err
 	}
 
 	pc := &pooledWebSocketConn{
-		key:        key,
-		conn:       conn,
-		inFlight:   make(chan struct{}, 1),
-		createdAt:  now,
-		lastUsedAt: now,
+		key:          key,
+		conn:         conn,
+		activityConn: activityConn,
+		inFlight:     make(chan struct{}, 1),
+		createdAt:    now,
+		lastUsedAt:   now,
 	}
 
 	e.mu.Lock()
 	if e.closed {
 		e.mu.Unlock()
-		_ = conn.Close()
+		_ = conn.CloseNow()
 		return nil, fmt.Errorf("websocket executor is closed")
 	}
 	if existing := e.pool[key]; existing != nil && !existing.isClosed() {
 		e.mu.Unlock()
-		_ = conn.Close()
+		_ = conn.CloseNow()
 		return existing, nil
 	}
 	// maxPoolSize is a hard cap on tracked pooled sessions (idle + in-flight).
@@ -500,7 +669,7 @@ func (e *WebSocketExecutor) getOrDialPooled(ctx context.Context, request *httpcl
 	// concurrency does not hit this branch; it waits on that session's inFlight slot.
 	if e.maxPoolSize > 0 && len(e.pool) >= e.maxPoolSize && !e.evictOldestIdleLocked() {
 		e.mu.Unlock()
-		_ = conn.Close()
+		_ = conn.CloseNow()
 		return nil, fmt.Errorf("websocket session pool is full")
 	}
 	e.pool[key] = pc
@@ -511,25 +680,6 @@ func (e *WebSocketExecutor) getOrDialPooled(ctx context.Context, request *httpcl
 	e.mu.Unlock()
 
 	return pc, nil
-}
-
-func (e *WebSocketExecutor) dial(ctx context.Context, request *httpclient.Request, wsURL string, headers http.Header) (*websocket.Conn, error) {
-	dialer := e.dialer
-	if dialer == nil {
-		dialer = websocket.DefaultDialer
-	}
-
-	conn, resp, err := dialer.DialContext(ctx, wsURL, headers)
-	if resp != nil {
-		// The WebSocket handshake is an HTTP response. Observe it before
-		// converting a rejected handshake into httpclient.Error so both
-		// successful and failed handshakes retain their provider headers.
-		request.ObserveResponseHeaders(ctx, resp.Header)
-	}
-	if err != nil {
-		return nil, newWebSocketDialError(request, resp, err)
-	}
-	return conn, nil
 }
 
 func (e *WebSocketExecutor) poolKey(ctx context.Context, request *httpclient.Request, wsURL string, headers http.Header) (webSocketPoolKey, bool) {
@@ -853,7 +1003,7 @@ func (pc *pooledWebSocketConn) close() {
 	pc.lastInput = nil
 	pc.lastResponseID = ""
 	pc.mu.Unlock()
-	_ = pc.conn.Close()
+	_ = pc.conn.CloseNow()
 }
 
 func (pc *pooledWebSocketConn) previousTurn() ([]json.RawMessage, string) {
@@ -868,7 +1018,7 @@ func (l *webSocketLease) release(evict bool) {
 	}
 	l.once.Do(func() {
 		if l.pooled == nil {
-			_ = l.conn.Close()
+			_ = l.conn.CloseNow()
 			return
 		}
 		if l.owner != nil {
@@ -1134,18 +1284,22 @@ func newWebSocketDialError(request *httpclient.Request, resp *http.Response, err
 }
 
 type webSocketStream struct {
-	ctx      context.Context
-	lease    *webSocketLease
-	done     chan struct{}
-	doneOnce sync.Once
-	mu       sync.Mutex
-	current  *httpclient.StreamEvent
-	err      error
-	closed   bool
-	sawEvent bool
-	terminal bool
+	ctx       context.Context
+	parentCtx context.Context
+	lease     *webSocketLease
+	done      chan struct{}
+	doneOnce  sync.Once
+	mu        sync.Mutex
+	current   *httpclient.StreamEvent
+	err       error
+	closed    bool
+	sawEvent  bool
+	terminal  bool
+	stopIdle  func()
 }
 
+// Next times upstream reads while yielding terminal response events before
+// releasing the lease. Read failures and recovery events evict the connection.
 func (s *webSocketStream) Next() bool {
 	if s.contextCancelled() {
 		return false
@@ -1157,7 +1311,9 @@ func (s *webSocketStream) Next() bool {
 	s.mu.Lock()
 	lease := s.lease
 	s.mu.Unlock()
-	_, msg, err := lease.conn.ReadMessage()
+	httpclient.SetStreamIdleWaiting(s.ctx, true)
+	_, msg, err := lease.conn.Read(s.ctx)
+	httpclient.SetStreamIdleWaiting(s.ctx, false)
 	if err != nil {
 		s.mu.Lock()
 		closed := s.closed
@@ -1165,8 +1321,8 @@ func (s *webSocketStream) Next() bool {
 		if closed {
 			return false
 		}
-		if websocket.IsCloseError(err, websocket.CloseNormalClosure) || strings.Contains(err.Error(), "use of closed network connection") {
-			if ctxErr := s.ctx.Err(); ctxErr != nil {
+		if websocket.CloseStatus(err) == websocket.StatusNormalClosure || strings.Contains(err.Error(), "use of closed network connection") {
+			if ctxErr := httpclient.StreamContextError(s.ctx); ctxErr != nil {
 				s.setErr(ctxErr)
 			} else if !s.hasSeenEvent() {
 				s.setErr(fmt.Errorf("websocket closed before response event"))
@@ -1235,10 +1391,20 @@ func (s *webSocketStream) Close() error {
 	return nil
 }
 
+// contextCancelled ends an active stream with its cancellation cause. Once the
+// stream is closed, only parent cancellation counts; watchdog cleanup does not.
 func (s *webSocketStream) contextCancelled() bool {
+	s.mu.Lock()
+	ctx := s.ctx
+	if s.closed && s.parentCtx != nil {
+		// Finishing cancels the watchdog context to release its resources.
+		// Only a caller cancellation can change an already finished stream.
+		ctx = s.parentCtx
+	}
+	s.mu.Unlock()
 	select {
-	case <-s.ctx.Done():
-		s.setContextErr()
+	case <-ctx.Done():
+		s.setContextErr(httpclient.StreamContextError(ctx))
 		s.finish(true)
 		return true
 	default:
@@ -1246,10 +1412,11 @@ func (s *webSocketStream) contextCancelled() bool {
 	}
 }
 
-func (s *webSocketStream) setContextErr() {
+// setContextErr records cancellation only before a terminal event or prior error.
+func (s *webSocketStream) setContextErr(cause error) {
 	s.mu.Lock()
 	if s.err == nil && !s.terminal {
-		s.err = s.ctx.Err()
+		s.err = cause
 	}
 	s.mu.Unlock()
 }
@@ -1279,9 +1446,11 @@ func (s *webSocketStream) markTerminal() {
 	s.mu.Unlock()
 }
 
+// setErr prefers the context's cause before a terminal event; otherwise it
+// accepts transport errors only while the stream remains open.
 func (s *webSocketStream) setErr(err error) {
 	s.mu.Lock()
-	if ctxErr := s.ctx.Err(); ctxErr != nil && !s.terminal {
+	if ctxErr := httpclient.StreamContextError(s.ctx); ctxErr != nil && !s.terminal {
 		s.err = ctxErr
 	} else if !s.closed {
 		s.err = err
@@ -1289,15 +1458,24 @@ func (s *webSocketStream) setErr(err error) {
 	s.mu.Unlock()
 }
 
+// finish captures cancellation before disarming the watchdog, detaches the read
+// observer, and releases the lease exactly once, evicting it when requested.
 func (s *webSocketStream) finish(evict bool) {
 	s.doneOnce.Do(func() {
 		s.mu.Lock()
 		s.closed = true
-		if ctxErr := s.ctx.Err(); ctxErr != nil && !s.terminal {
+		if ctxErr := httpclient.StreamContextError(s.ctx); ctxErr != nil && !s.terminal {
 			s.err = ctxErr
 		}
 		lease := s.lease
 		s.mu.Unlock()
+		// coder may still be closing a canceled read even after it returned a
+		// terminal event. Retire that socket before cleanup cancels healthy reads.
+		evict = evict || s.ctx.Err() != nil
+		if s.stopIdle != nil {
+			setWebSocketActivity(lease.activityConn, nil)
+			s.stopIdle()
+		}
 		lease.release(evict)
 		close(s.done)
 	})
@@ -1394,4 +1572,38 @@ func jsonValueIsEmpty(value any) bool {
 	}
 	text, ok := value.(string)
 	return ok && text == ""
+}
+
+// Track socket reads rather than decoded events: control frames and partial
+// message payloads are upstream activity too, including on pooled connections.
+type webSocketActivityConn struct {
+	net.Conn
+	mu       sync.Mutex
+	activity func()
+}
+
+// Read reports raw socket bytes to the current lease's activity observer,
+// including partial messages and control frames.
+func (c *webSocketActivityConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if n > 0 {
+		c.mu.Lock()
+		activity := c.activity
+		c.mu.Unlock()
+		if activity != nil {
+			activity()
+		}
+	}
+	return n, err
+}
+
+// setWebSocketActivity replaces the observer retained separately from coder's
+// connection. A nil observer detaches the finished request's watchdog.
+func setWebSocketActivity(conn *webSocketActivityConn, activity func()) {
+	if conn == nil {
+		return
+	}
+	conn.mu.Lock()
+	conn.activity = activity
+	conn.mu.Unlock()
 }

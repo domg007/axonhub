@@ -153,6 +153,30 @@ func (f PluginFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, erro
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.PluginMutation", m)
 }
 
+// The PluginScheduleFunc type is an adapter to allow the use of ordinary
+// function as PluginSchedule mutator.
+type PluginScheduleFunc func(context.Context, *ent.PluginScheduleMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f PluginScheduleFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.PluginScheduleMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.PluginScheduleMutation", m)
+}
+
+// The PluginScheduleRunFunc type is an adapter to allow the use of ordinary
+// function as PluginScheduleRun mutator.
+type PluginScheduleRunFunc func(context.Context, *ent.PluginScheduleRunMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f PluginScheduleRunFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.PluginScheduleRunMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.PluginScheduleRunMutation", m)
+}
+
 // The PluginStorageFunc type is an adapter to allow the use of ordinary
 // function as PluginStorage mutator.
 type PluginStorageFunc func(context.Context, *ent.PluginStorageMutation) (ent.Value, error)
@@ -163,6 +187,30 @@ func (f PluginStorageFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Valu
 		return f(ctx, mv)
 	}
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.PluginStorageMutation", m)
+}
+
+// The PluginTableOperationFunc type is an adapter to allow the use of ordinary
+// function as PluginTableOperation mutator.
+type PluginTableOperationFunc func(context.Context, *ent.PluginTableOperationMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f PluginTableOperationFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.PluginTableOperationMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.PluginTableOperationMutation", m)
+}
+
+// The PluginTableStorageFunc type is an adapter to allow the use of ordinary
+// function as PluginTableStorage mutator.
+type PluginTableStorageFunc func(context.Context, *ent.PluginTableStorageMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f PluginTableStorageFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.PluginTableStorageMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.PluginTableStorageMutation", m)
 }
 
 // The ProjectFunc type is an adapter to allow the use of ordinary
@@ -223,6 +271,30 @@ func (f RequestFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, err
 		return f(ctx, mv)
 	}
 	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.RequestMutation", m)
+}
+
+// The RequestBodyChunkFunc type is an adapter to allow the use of ordinary
+// function as RequestBodyChunk mutator.
+type RequestBodyChunkFunc func(context.Context, *ent.RequestBodyChunkMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f RequestBodyChunkFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.RequestBodyChunkMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.RequestBodyChunkMutation", m)
+}
+
+// The RequestBodyChunkRefFunc type is an adapter to allow the use of ordinary
+// function as RequestBodyChunkRef mutator.
+type RequestBodyChunkRefFunc func(context.Context, *ent.RequestBodyChunkRefMutation) (ent.Value, error)
+
+// Mutate calls f(ctx, m).
+func (f RequestBodyChunkRefFunc) Mutate(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+	if mv, ok := m.(*ent.RequestBodyChunkRefMutation); ok {
+		return f(ctx, mv)
+	}
+	return nil, fmt.Errorf("unexpected mutation type %T. expect *ent.RequestBodyChunkRefMutation", m)
 }
 
 // The RequestExecutionFunc type is an adapter to allow the use of ordinary

@@ -19,6 +19,7 @@ import (
 	entprivacy "github.com/looplj/axonhub/internal/ent/privacy"
 	"github.com/looplj/axonhub/internal/log"
 	"github.com/looplj/axonhub/internal/server/biz"
+	"github.com/looplj/axonhub/internal/server/middleware"
 	"github.com/looplj/axonhub/internal/server/orchestrator"
 	"github.com/looplj/axonhub/internal/server/plugin"
 	"github.com/looplj/axonhub/llm"
@@ -380,12 +381,12 @@ func (handlers *OpenAIHandlers) CreateResponse(c *gin.Context) {
 	handlers.ResponseCompletionHandlers.ChatCompletion(c)
 }
 
-func (handlers *OpenAIHandlers) CreateResponseWebSocket(requestTimeout time.Duration) gin.HandlerFunc {
+func (handlers *OpenAIHandlers) CreateResponseWebSocket(streamTimeout time.Duration) gin.HandlerFunc {
 	orch := handlers.ResponseCompletionHandlers.ChatCompletionOrchestrator
 	return func(c *gin.Context) {
 		serveResponsesWebSocket(
 			c,
-			requestTimeout,
+			streamTimeout,
 			orch.Process,
 			func(ctx context.Context, err error) *httpclient.Error {
 				return transformOrchestratorError(ctx, err, orch)
@@ -489,6 +490,8 @@ func (handlers *OpenAIHandlers) CreateImageVariation(c *gin.Context) {
 }
 
 func (handlers *OpenAIHandlers) CreateVideo(c *gin.Context) {
+	cancel := middleware.SelectLLMTimeout(c, false)
+	defer cancel()
 	ctx := c.Request.Context()
 
 	genericReq, err := httpclient.ReadHTTPRequest(c.Request)
@@ -586,12 +589,12 @@ type Capabilities struct {
 }
 
 type Pricing struct {
-	Input      float64 `json:"input"`
-	Output     float64 `json:"output"`
-	CacheRead  float64 `json:"cache_read"`
-	CacheWrite float64 `json:"cache_write"`
-	Unit       string  `json:"unit"`
-	Currency   string  `json:"currency"`
+	Input      *float64 `json:"input,omitempty"`
+	Output     *float64 `json:"output,omitempty"`
+	CacheRead  *float64 `json:"cache_read,omitempty"`
+	CacheWrite *float64 `json:"cache_write,omitempty"`
+	Unit       string   `json:"unit"`
+	Currency   string   `json:"currency"`
 }
 
 type OpenAIModel struct {
@@ -732,10 +735,10 @@ func convertModelToOpenAIExtended(m *ent.Model, include map[string]bool) OpenAIM
 		}
 		if shouldInclude("pricing") {
 			pricing := Pricing{
-				Input:      m.ModelCard.Cost.Input,
-				Output:     m.ModelCard.Cost.Output,
-				CacheRead:  m.ModelCard.Cost.CacheRead,
-				CacheWrite: m.ModelCard.Cost.CacheWrite,
+				Input:      m.ModelCard.ReferencePrice("input"),
+				Output:     m.ModelCard.ReferencePrice("output"),
+				CacheRead:  m.ModelCard.ReferencePrice("cacheRead"),
+				CacheWrite: m.ModelCard.ReferencePrice("cacheWrite"),
 				Unit:       "per_1m_tokens",
 				Currency:   "USD",
 			}

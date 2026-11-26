@@ -12,6 +12,8 @@ import (
 	"entgo.io/contrib/entgql"
 	"github.com/looplj/axonhub/internal/ent"
 	"github.com/looplj/axonhub/internal/ent/providerquotastatus"
+	"github.com/looplj/axonhub/internal/ent/request"
+	"github.com/looplj/axonhub/internal/ent/requestexecution"
 	"github.com/looplj/axonhub/internal/log"
 	"github.com/looplj/axonhub/internal/objects"
 	"github.com/looplj/axonhub/internal/server/biz"
@@ -40,6 +42,11 @@ func (r *aPIKeyResolver) ProjectID(ctx context.Context, obj *ent.APIKey) (*objec
 		Type: ent.TypeProject,
 		ID:   obj.ProjectID,
 	}, nil
+}
+
+// Key is the resolver for the key field.
+func (r *aPIKeyResolver) Key(ctx context.Context, obj *ent.APIKey) (string, error) {
+	return r.apiKeyService.RevealAPIKey(ctx, obj)
 }
 
 // User is the resolver for the user field.
@@ -524,18 +531,6 @@ func (r *queryResolver) Roles(ctx context.Context, after *entgql.Cursor[int], fi
 	)
 }
 
-// Systems is the resolver for the systems field.
-func (r *queryResolver) Systems(ctx context.Context, after *entgql.Cursor[int], first *int, before *entgql.Cursor[int], last *int, orderBy *ent.SystemOrder, where *ent.SystemWhereInput) (*ent.SystemConnection, error) {
-	if err := validatePaginationArgs(first, last); err != nil {
-		return nil, err
-	}
-
-	return r.client.System.Query().Paginate(ctx, after, first, before, last,
-		ent.WithSystemOrder(orderBy),
-		ent.WithSystemFilter(where.Filter),
-	)
-}
-
 // Threads is the resolver for the threads field.
 func (r *queryResolver) Threads(ctx context.Context, after *entgql.Cursor[int], first *int, before *entgql.Cursor[int], last *int, orderBy *ent.ThreadOrder, where *ent.ThreadWhereInput) (*ent.ThreadConnection, error) {
 	if err := validatePaginationArgs(first, last); err != nil {
@@ -643,7 +638,13 @@ func (r *requestResolver) DataStorageID(ctx context.Context, obj *ent.Request) (
 
 // RequestBody is the resolver for the requestBody field.
 func (r *requestResolver) RequestBody(ctx context.Context, obj *ent.Request) (objects.JSONRawMessage, error) {
-	value, err := r.requestService.LoadRequestBody(ctx, obj)
+	// Field collection omits hidden storage metadata, so read it under the caller's permission.
+	metadata, err := r.client.Request.Query().Where(request.IDEQ(obj.ID)).
+		Select(request.FieldProjectID, request.FieldDataStorageID, request.FieldRequestBodyChunked, request.FieldRequestBody).Only(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load request body metadata: %w", err)
+	}
+	value, err := r.requestService.LoadRequestBody(ctx, metadata)
 	if err != nil {
 		log.Error(ctx, "Failed to load request body", log.Cause(err), log.Int("request_id", obj.ID))
 		return nil, fmt.Errorf("failed to load request body: %w", err)
@@ -773,7 +774,12 @@ func (r *requestExecutionResolver) ChannelAPIKeySuffix(ctx context.Context, obj 
 
 // RequestBody is the resolver for the requestBody field.
 func (r *requestExecutionResolver) RequestBody(ctx context.Context, obj *ent.RequestExecution) (objects.JSONRawMessage, error) {
-	value, err := r.requestService.LoadRequestExecutionRequestBody(ctx, obj)
+	metadata, err := r.client.RequestExecution.Query().Where(requestexecution.IDEQ(obj.ID)).
+		Select(requestexecution.FieldProjectID, requestexecution.FieldRequestID, requestexecution.FieldDataStorageID, requestexecution.FieldRequestBodyChunked, requestexecution.FieldRequestBody).Only(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load execution request body metadata: %w", err)
+	}
+	value, err := r.requestService.LoadRequestExecutionRequestBody(ctx, metadata)
 	if err != nil {
 		log.Error(ctx, "Failed to load execution request body", log.Cause(err), log.Int("request_execution_id", obj.ID))
 		return nil, fmt.Errorf("failed to load request body: %w", err)
@@ -837,14 +843,6 @@ func (r *roleResolver) ProjectID(ctx context.Context, obj *ent.Role) (*objects.G
 // UserRoles is the resolver for the userRoles field.
 func (r *roleResolver) UserRoles(ctx context.Context, obj *ent.Role) ([]*ent.UserRole, error) {
 	return obj.QueryUserRoles().All(ctx)
-}
-
-// ID is the resolver for the id field.
-func (r *systemResolver) ID(ctx context.Context, obj *ent.System) (*objects.GUID, error) {
-	return &objects.GUID{
-		Type: ent.TypeSystem,
-		ID:   obj.ID,
-	}, nil
 }
 
 // ID is the resolver for the id field.
@@ -1056,9 +1054,6 @@ func (r *Resolver) RequestExecution() RequestExecutionResolver { return &request
 // Role returns RoleResolver implementation.
 func (r *Resolver) Role() RoleResolver { return &roleResolver{r} }
 
-// System returns SystemResolver implementation.
-func (r *Resolver) System() SystemResolver { return &systemResolver{r} }
-
 // Thread returns ThreadResolver implementation.
 func (r *Resolver) Thread() ThreadResolver { return &threadResolver{r} }
 
@@ -1095,7 +1090,6 @@ type queryResolver struct{ *Resolver }
 type requestResolver struct{ *Resolver }
 type requestExecutionResolver struct{ *Resolver }
 type roleResolver struct{ *Resolver }
-type systemResolver struct{ *Resolver }
 type threadResolver struct{ *Resolver }
 type traceResolver struct{ *Resolver }
 type usageLogResolver struct{ *Resolver }

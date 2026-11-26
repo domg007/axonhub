@@ -84,9 +84,9 @@ func (srv *Server) Run() error {
 	addr := listenAddr(srv.Config.Host, srv.Config.Port)
 	srv.server = &http.Server{
 		Addr:         addr,
-		Handler:      srv.Engine,
+		Handler:      mountBasePath(srv.Config.BasePath, srv.Engine),
 		ReadTimeout:  srv.Config.ReadTimeout,
-		WriteTimeout: max(srv.Config.RequestTimeout, srv.Config.LLMRequestTimeout),
+		WriteTimeout: srv.Config.writeTimeout(),
 	}
 	srv.addr = addr
 

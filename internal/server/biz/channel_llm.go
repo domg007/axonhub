@@ -356,6 +356,8 @@ func (svc *ChannelService) buildCodexOutboundWithRefresh(
 	if len(endpointPath) > 0 {
 		path = endpointPath[0]
 	}
+	ops := channelHeaderOverrideOperations(c)
+	clientVersion := func() string { return svc.resolveCodexClientVersion(ops).Version }
 	if c.Credentials.IsOAuth() {
 		if ch != nil {
 			if existing, ok := ch.Outbound.(*codex.OutboundTransformer); ok {
@@ -366,6 +368,7 @@ func (svc *ChannelService) buildCodexOutboundWithRefresh(
 						Transport:       transport,
 						AlphaSearchPath: alphaSearchPath,
 						EndpointPath:    path,
+						ClientVersion:   clientVersion,
 					})
 				}
 			}
@@ -411,6 +414,7 @@ func (svc *ChannelService) buildCodexOutboundWithRefresh(
 			Transport:       transport,
 			AlphaSearchPath: alphaSearchPath,
 			EndpointPath:    path,
+			ClientVersion:   clientVersion,
 		})
 	}
 
@@ -426,6 +430,7 @@ func (svc *ChannelService) buildCodexOutboundWithRefresh(
 		Transport:       transport,
 		AlphaSearchPath: alphaSearchPath,
 		EndpointPath:    path,
+		ClientVersion:   clientVersion,
 	})
 }
 
@@ -1116,11 +1121,19 @@ func (svc *ChannelService) buildChannelWithTransformer(c *ent.Channel, apiKeyOve
 				return nil, fmt.Errorf("failed to parse claudecode oauth credentials: %w", err)
 			}
 
-			tokens := claudecode.NewTokenProvider(oauth.TokenProviderParams{
-				Credentials: creds,
-				HTTPClient:  httpClient,
-				OnRefreshed: svc.onTokenRefreshed(c),
-			})
+			var tokens oauth.TokenGetter
+			if creds.RefreshToken == "" && creds.ExpiresAt.IsZero() {
+				// Only the upstream can check the validity of an access-only token with no known expiry.
+				tokens = oauth.NewStaticTokenProvider(creds)
+			} else {
+				provider := claudecode.NewTokenProvider(oauth.TokenProviderParams{
+					Credentials: creds,
+					HTTPClient:  httpClient,
+					OnRefreshed: svc.onTokenRefreshed(c),
+				})
+				setupAutoRefresh(ch, provider, oauth.AutoRefreshOptions{})
+				tokens = provider
+			}
 
 			transformer, err := claudecode.NewOutboundTransformer(claudecode.Params{
 				TokenProvider:   tokens,
@@ -1133,7 +1146,6 @@ func (svc *ChannelService) buildChannelWithTransformer(c *ent.Channel, apiKeyOve
 			}
 
 			ch.Outbound = transformer
-			setupAutoRefresh(ch, tokens, oauth.AutoRefreshOptions{})
 
 			return ch, nil
 		}

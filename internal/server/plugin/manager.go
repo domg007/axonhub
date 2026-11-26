@@ -36,6 +36,7 @@ import (
 	"github.com/looplj/axonhub/internal/pkg/xcache/live"
 	"github.com/looplj/axonhub/internal/pkg/xerrors"
 	"github.com/looplj/axonhub/internal/pkg/xredis"
+	"github.com/looplj/axonhub/internal/scopes"
 	"github.com/looplj/axonhub/internal/server/biz"
 	"github.com/looplj/axonhub/internal/server/events"
 )
@@ -140,9 +141,10 @@ type Manager struct {
 	extract         func(data []byte, dest string) ([]string, error)
 	// compileModule, when set, replaces compileContents for a package that
 	// contains plugin.js. Tests count calls and inject failures.
-	compileModule func(data []byte) (*moejs.Module, error)
-	forceNext     atomic.Bool
-	packageReads  atomic.Int64
+	compileModule    func(data []byte) (*moejs.Module, error)
+	forceNext        atomic.Bool
+	packageReads     atomic.Int64
+	serverMiddleware atomic.Pointer[Generation]
 
 	refreshMu   sync.Mutex
 	resourcesMu sync.Mutex
@@ -197,6 +199,14 @@ type Manager struct {
 	// hookTimeout overrides the 10s request-hook budget. Zero uses the default.
 	// Tests set it so a timeout case does not wait the full budget.
 	hookTimeout time.Duration
+
+	scanningTasks atomic.Bool
+	sqlSlots      chan struct{}
+	tableDDLSlot  chan struct{}
+	taskSlots     chan struct{}
+	taskMu        sync.Mutex
+	taskRuns      map[int]pluginTaskRun
+	tasksStopped  bool
 
 	stopOnce sync.Once
 	stopErr  error
@@ -269,6 +279,10 @@ func newManager(params ManagerParams, cfg managerConfig) (*Manager, error) {
 		writes:          newPluginWriteLimiter(),
 		channels:        params.Channels,
 		webhooks:        params.Webhooks,
+		sqlSlots:        make(chan struct{}, pluginSQLConcurrency),
+		tableDDLSlot:    make(chan struct{}, 1),
+		taskSlots:       make(chan struct{}, scheduleWorkers),
+		taskRuns:        make(map[int]pluginTaskRun),
 	}
 	manager.callsCond = sync.NewCond(&manager.callsMu)
 	if manager.countersUseRedis() {
@@ -344,8 +358,10 @@ func (m *Manager) Stop(ctx context.Context) error {
 }
 
 func (m *Manager) stop(ctx context.Context) error {
+	m.cancelTasks(nil, true)
 	m.callsMu.Lock()
 	m.stopping = true
+	m.serverMiddleware.Store(nil)
 	m.callsMu.Unlock()
 	if m.dispatcher != nil {
 		m.dispatcher.close()
@@ -460,6 +476,27 @@ func (m *Manager) current() *Generation {
 	return m.cache.GetData()
 }
 
+// acquireGeneration pins a usable generation, retrying if a concurrent refresh
+// replaced it before the acquire.
+func acquireGeneration(ctx context.Context, current func() *Generation, usable func(*Generation) bool) (*Generation, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		gen := current()
+		if gen == nil || (usable != nil && !usable(gen)) {
+			return nil, nil
+		}
+		if err := gen.Acquire(); err != nil {
+			if errors.Is(err, ErrGenerationClosed) && current() != gen {
+				continue
+			}
+			return nil, err
+		}
+		return gen, nil
+	}
+}
+
 // Refresh runs one non-forced refresh, the same comparison the interval uses.
 func (m *Manager) Refresh(ctx context.Context) error {
 	return m.cache.Load(ctx, false)
@@ -571,6 +608,11 @@ func (m *Manager) insertPlugin(ctx context.Context, zip []byte, pkg *Package, su
 			return err
 		}
 		row.Package = nil
+		if len(pkg.Manifest.Tasks) > 0 {
+			if err := m.syncTasks(txCtx, row.ID, pkg.Manifest.Tasks); err != nil {
+				return err
+			}
+		}
 		saved = row
 		return nil
 	})
@@ -588,7 +630,10 @@ func (m *Manager) upgradePlugin(ctx context.Context, current pluginRecord, zip [
 		saved   *ent.Plugin
 		preview *UpgradePreview
 	)
-	err := m.runInTx(ctx, func(txCtx context.Context) error {
+	err := m.writeWithPluginTables(ctx, func(txCtx context.Context, provision tableProvisionFn) error {
+		if err := m.lockTableInstallation(txCtx, current.ID); err != nil {
+			return err
+		}
 		row, err := m.oneRecord(txCtx, current.ID)
 		if err != nil {
 			return err
@@ -608,6 +653,11 @@ func (m *Manager) upgradePlugin(ctx context.Context, current pluginRecord, zip [
 			saved = row.entity()
 			return errUpgradePreview
 		}
+		if row.Enabled && len(pkg.Manifest.Tables) > 0 {
+			if err := provision(txCtx, row, pkg.SHA256, pkg.Manifest.Tables); err != nil {
+				return err
+			}
+		}
 		updated, err := m.client(txCtx).Plugin.UpdateOneID(row.ID).
 			SetName(pkg.Manifest.Name).
 			SetVersion(pkg.Manifest.Version).
@@ -623,6 +673,11 @@ func (m *Manager) upgradePlugin(ctx context.Context, current pluginRecord, zip [
 			return err
 		}
 		updated.Package = nil
+		if len(row.Manifest.Tasks) > 0 || len(pkg.Manifest.Tasks) > 0 {
+			if err := m.syncTasks(txCtx, row.ID, pkg.Manifest.Tasks); err != nil {
+				return err
+			}
+		}
 		saved = updated
 		return nil
 	})
@@ -643,7 +698,10 @@ func (m *Manager) upgradePlugin(ctx context.Context, current pluginRecord, zip [
 // It fails while any configSchema.required field is missing.
 func (m *Manager) Enable(ctx context.Context, id int, granted []string, grantedNetwork []string) error {
 	ctx = authz.WithSystemBypass(ctx, pluginBypassReason)
-	err := m.runInTx(ctx, func(txCtx context.Context) error {
+	err := m.writeWithPluginTables(ctx, func(txCtx context.Context, provision tableProvisionFn) error {
+		if err := m.lockTableInstallation(txCtx, id); err != nil {
+			return err
+		}
 		row, err := m.oneRecord(txCtx, id)
 		if err != nil {
 			return err
@@ -658,6 +716,11 @@ func (m *Manager) Enable(ctx context.Context, id int, granted []string, grantedN
 		network, err := networkSubset(grantedNetwork, row.Manifest.NetworkGrants())
 		if err != nil {
 			return err
+		}
+		if len(row.Manifest.Tables) > 0 {
+			if err := provision(txCtx, row, row.PackageSHA256, row.Manifest.Tables); err != nil {
+				return err
+			}
 		}
 		return m.client(txCtx).Plugin.UpdateOneID(id).
 			SetEnabled(true).
@@ -689,11 +752,15 @@ func (m *Manager) Disable(ctx context.Context, id int) error {
 // UpdateSettings validates config against the stored schema and saves priority and config.
 // An enabled plugin must keep every required field set; a disabled one may save partial config.
 func (m *Manager) UpdateSettings(ctx context.Context, id int, priority int, config map[string]any) error {
+	isOwner := scopes.IsDirectOwner(ctx)
 	ctx = authz.WithSystemBypass(ctx, pluginBypassReason)
 	err := m.runInTx(ctx, func(txCtx context.Context) error {
 		row, err := m.oneRecord(txCtx, id)
 		if err != nil {
 			return err
+		}
+		if slices.Contains(row.Granted, permSQL) && !isOwner {
+			return xerrors.ForbiddenError("only the Owner can configure a plugin with sql access")
 		}
 		config = keepSecretValues(row.Manifest.ConfigSchema, row.Config, config)
 		if err := validateStoredConfig(row.Manifest.ConfigSchema, config); err != nil {
@@ -718,8 +785,16 @@ func (m *Manager) UpdateSettings(ctx context.Context, id int, priority int, conf
 // Delete clears the package bytes, keeps package_sha256, deletes KV rows for
 // this installation, and soft-deletes the row. All three writes share one transaction.
 func (m *Manager) Delete(ctx context.Context, id int) error {
+	return m.DeleteWithTables(ctx, id, false)
+}
+
+// DeleteWithTables optionally detaches the storage generation and queues it for permanent deletion.
+func (m *Manager) DeleteWithTables(ctx context.Context, id int, purgeTables bool) error {
 	ctx = authz.WithSystemBypass(ctx, pluginBypassReason)
 	err := m.runInTx(ctx, func(txCtx context.Context) error {
+		if err := m.lockTableInstallation(txCtx, id); err != nil {
+			return err
+		}
 		row, err := m.oneRecord(txCtx, id)
 		if err != nil {
 			return err
@@ -727,13 +802,23 @@ func (m *Manager) Delete(ctx context.Context, id int) error {
 		if m.IsBuiltin(row.PluginID) {
 			return fmt.Errorf("plugin %q is built in and cannot be deleted", row.PluginID)
 		}
+		if purgeTables {
+			if err := m.queueTablePurge(txCtx, row.PluginID); err != nil {
+				return err
+			}
+		}
 		if err := m.client(txCtx).Plugin.UpdateOneID(id).ClearPackage().Exec(txCtx); err != nil {
 			return err
 		}
 		if err := m.KVDeleteInstallation(txCtx, row.PluginID, row.ID); err != nil {
 			return err
 		}
-		return m.client(txCtx).Plugin.DeleteOneID(id).Exec(txCtx)
+		if len(row.Manifest.Tasks) > 0 {
+			if err := m.syncTasks(txCtx, row.ID, nil); err != nil {
+				return err
+			}
+		}
+		return m.softDeletePlugin(txCtx, row)
 	})
 	if err != nil {
 		return err
@@ -814,6 +899,16 @@ func (m *Manager) refresh(ctx context.Context, current *Generation, _ time.Time)
 }
 
 func (m *Manager) onSwap(old, next *Generation) {
+	m.callsMu.Lock()
+	if !m.stopping {
+		if next != nil && len(next.serverMiddleware) != 0 {
+			m.serverMiddleware.Store(next)
+		} else {
+			m.serverMiddleware.Store(nil)
+		}
+	}
+	m.callsMu.Unlock()
+	m.cancelTasks(next, false)
 	if old != nil && old != next {
 		m.retire(old)
 	}
@@ -1178,12 +1273,13 @@ func enabledIDs(gen *Generation) map[string]bool {
 // Generation is an immutable snapshot of installed plugins, sorted by priority.
 // A retired generation accepts no new calls. An acquired call runs to completion.
 type Generation struct {
-	manager     *Manager
-	plugins     []*LoadedPlugin
-	byID        map[int]*LoadedPlugin
-	byPluginID  map[string]*LoadedPlugin
-	fingerprint dbFingerprint
-	holds       []*pluginResource
+	manager          *Manager
+	plugins          []*LoadedPlugin
+	byID             map[int]*LoadedPlugin
+	byPluginID       map[string]*LoadedPlugin
+	fingerprint      dbFingerprint
+	holds            []*pluginResource
+	serverMiddleware []serverMiddlewareHandler
 
 	mu       sync.Mutex
 	refs     int
@@ -1202,6 +1298,11 @@ func newGeneration(manager *Manager, plugins []*LoadedPlugin) *Generation {
 		item.generation = gen
 		gen.byID[item.ID] = item
 		gen.byPluginID[item.PluginID] = item
+		if item.Status == RuntimeStatusActive && item.Manifest.Server != nil && item.resource != nil {
+			for _, entry := range item.Manifest.Server.Middleware {
+				gen.serverMiddleware = append(gen.serverMiddleware, serverMiddlewareHandler{plugin: item, export: entry.Handler})
+			}
+		}
 	}
 	return gen
 }
